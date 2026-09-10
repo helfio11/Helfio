@@ -1,0 +1,50 @@
+{
+  "realm": "helfio",
+  "enabled": true,
+  "displayName": "Helfio",
+  "registrationAllowed": true,
+  "verifyEmail": true,
+  "resetPasswordAllowed": true,
+  "rememberMe": true,
+  "roles": {
+    "realm": [
+      { "name": "CUSTOMER", "description": "Helfio customer" },
+      { "name": "PROVIDER", "description": "Helfio provider" },
+      { "name": "ADMIN", "description": "Helfio administrator" },
+      { "name": "MODERATOR", "description": "Future Helfio moderator" },
+      { "name": "SUPPORT", "description": "Future Helfio support role" },
+      { "name": "SUPER_ADMIN", "description": "Future Helfio super administrator" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "helfio-web",
+      "name": "Helfio Web",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": false,
+      "protocolMappers": [{ "name": "helfio-api-audience", "protocol": "openid-connect", "protocolMapper": "oidc-audience-mapper", "config": { "included.client.audience": "helfio-web", "id.token.claim": "false", "access.token.claim": "true", "userinfo.token.claim": "false" } }],
+      "redirectUris": ["http://localhost:5173/*", "http://127.0.0.1:5173/*"],
+      "webOrigins": ["http://localhost:5173", "http://127.0.0.1:5173"],
+      "attributes": { "pkce.code.challenge.method": "S256", "post.logout.redirect.uris": "+" },
+      "frontchannelLogout": true
+    },
+    {
+      "clientId": "helfio-admin",
+      "name": "Helfio Admin",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": false,
+      "attributes": { "pkce.code.challenge.method": "S256" },
+      "redirectUris": ["http://localhost:5173/admin/*", "http://127.0.0.1:5173/admin/*"],
+      "webOrigins": ["http://localhost:5173", "http://127.0.0.1:5173"],
+      "frontchannelLogout": true
+    }
+  ]
+}

@@ -12,5 +12,6 @@ export default {
   },
   steps: { kicker: "IT'S THAT EASY", title: 'Reach your goal in 4 steps', description: 'Just get started. Just help.', items: [{ title: 'Submit a request', accent: 'Tell us what you need and where.', description: 'Describe what you need and where.' }, { title: 'Receive suitable providers', accent: 'Get suitable offers', description: 'We find verified service providers near you.' }, { title: 'Contact directly', accent: 'Contact directly', description: 'Write or call directly.' }, { title: 'Job completed', accent: 'The job is done', description: 'Rate the service and help others.' }] },
   cta: { kicker: 'READY?', title: 'Together it is easier.', description: 'Join Helfio and make a difference.', register: 'Register for free' },
+  auth: { login: 'Log in', register: 'Register', logout: 'Log out', account: 'Account' },
   footer: { tag: 'Marketplace', description: 'Professional services for home, projects, and everyday life.', company: 'Company', service: 'Service', legal: 'Legal', about: 'About us', careers: 'Careers', partners: 'Partners', customerService: 'Customer service', help: 'Help', reviews: 'Reviews', terms: 'Terms and conditions', privacy: 'Privacy', imprint: 'Legal notice' },
 } as const
