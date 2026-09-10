@@ -1,5 +1,11 @@
 <script setup lang="ts">
-defineProps<{ locale: 'de' | 'sq' }>()
-const emit = defineEmits<{ (e: 'change-locale', value: 'de' | 'sq'): void }>()
+import { useI18n } from 'vue-i18n'
+import type { Locale } from '../i18n'
+
+defineProps<{ locale: Locale }>()
+const emit = defineEmits<{ (e: 'change-locale', value: Locale): void }>()
+const { t } = useI18n()
 </script>
-<template><header class="topbar"><div class="container topbar-inner"><a class="brand" href="#"><span class="brand-mark">⌂</span><span><strong>Helfio</strong><small>Menschen. Hilfe. Nähe.</small></span></a><nav><a href="#services">Dienstleistungen</a><a href="#providers">Für Kunden</a><a href="#how">Für Anbieter</a><a href="#about">Über uns</a><a href="#help">Hilfe</a></nav><div class="header-actions"><span>◉</span><button class="language" :class="{ active: locale === 'de' }" type="button" @click="emit('change-locale', 'de')">DE</button><span>|</span><button class="language" :class="{ active: locale === 'sq' }" type="button" @click="emit('change-locale', 'sq')">SQ</button><span>⌄</span><button class="login" type="button">Einloggen</button><button class="header-cta" type="button">Kostenlos registrieren</button></div></div></header></template>
+<template>
+	<header class="topbar"><div class="container topbar-inner"><a class="brand" href="#"><span class="brand-mark">⌂</span><span><strong>Helfio</strong><small>{{ t('brandTagline') }}</small></span></a><nav><a href="#services">{{ t('nav.services') }}</a><a href="#providers">{{ t('nav.customers') }}</a><a href="#how">{{ t('nav.providers') }}</a><a href="#about">{{ t('nav.about') }}</a><a href="#help">{{ t('nav.help') }}</a></nav><div class="header-actions"><span>◉</span><button v-for="supportedLocale in ['en', 'de', 'sq', 'tr']" :key="supportedLocale" class="language" :class="{ active: locale === supportedLocale }" type="button" @click="emit('change-locale', supportedLocale as Locale)">{{ supportedLocale.toUpperCase() }}</button><span>⌄</span><button class="login" type="button">{{ t('nav.login') }}</button><button class="header-cta" type="button">{{ t('nav.register') }}</button></div></div></header>
+</template>

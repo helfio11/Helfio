@@ -15,7 +15,8 @@
   },
   "dependencies": {
     "pg": "^8.16.3",
-    "vue": "^3.5.42"
+    "vue": "^3.5.42",
+    "vue-i18n": "^11.4.10"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",

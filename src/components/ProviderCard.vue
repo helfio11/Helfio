@@ -1,4 +1,8 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
+
 export interface ProviderItem {
   name: string
   role: string
@@ -29,7 +33,7 @@ defineProps<{ provider: ProviderItem }>()
 
     <div class="provider-meta">
       <span>{{ provider.location }}</span>
-      <span>{{ provider.reviews }} Bewertungen</span>
+      <span>{{ provider.reviews }} {{ t('providers.reviews') }}</span>
     </div>
 
     <div class="provider-badges">
@@ -38,10 +42,9 @@ defineProps<{ provider: ProviderItem }>()
 
     <div class="provider-footer">
       <div>
-        <small>Ab</small>
         <strong>{{ provider.price }}</strong>
       </div>
-      <button type="button">Kontakt</button>
+      <button type="button">{{ t('providers.profile') }}</button>
     </div>
   </article>
 </template>

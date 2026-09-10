@@ -1,5 +1,8 @@
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
+
 const currentYear = new Date().getFullYear()
+const { t } = useI18n()
 </script>
 
 <template>
@@ -10,37 +13,37 @@ const currentYear = new Date().getFullYear()
           <div class="brand-mark">H</div>
           <div class="brand-copy">
             <span class="brand-name">Helfio</span>
-            <small class="brand-tag">Marketplace</small>
+            <small class="brand-tag">{{ t('footer.tag') }}</small>
           </div>
         </div>
-        <p class="footer-copy">Professionelle Dienstleistungen für Zuhause, Projekte und Alltag.</p>
+        <p class="footer-copy">{{ t('footer.description') }}</p>
       </div>
 
       <div class="footer-links">
-        <h4>Unternehmen</h4>
-        <a href="#">Über uns</a>
-        <a href="#">Karriere</a>
-        <a href="#">Partner</a>
+        <h4>{{ t('footer.company') }}</h4>
+        <a href="#">{{ t('footer.about') }}</a>
+        <a href="#">{{ t('footer.careers') }}</a>
+        <a href="#">{{ t('footer.partners') }}</a>
       </div>
 
       <div class="footer-links">
-        <h4>Service</h4>
-        <a href="#">Kundenservice</a>
-        <a href="#">Hilfe</a>
-        <a href="#">Bewertungen</a>
+        <h4>{{ t('footer.service') }}</h4>
+        <a href="#">{{ t('footer.customerService') }}</a>
+        <a href="#">{{ t('footer.help') }}</a>
+        <a href="#">{{ t('footer.reviews') }}</a>
       </div>
 
       <div class="footer-links">
-        <h4>Rechtliches</h4>
-        <a href="#">AGB</a>
-        <a href="#">Datenschutz</a>
-        <a href="#">Impressum</a>
+        <h4>{{ t('footer.legal') }}</h4>
+        <a href="#">{{ t('footer.terms') }}</a>
+        <a href="#">{{ t('footer.privacy') }}</a>
+        <a href="#">{{ t('footer.imprint') }}</a>
       </div>
     </div>
 
     <div class="container footer-bottom">
       <span>© {{ currentYear }} Helfio</span>
-      <span>Deutsch • Shqip</span>
+      <span>EN • DE • SQ • TR</span>
     </div>
   </footer>
 </template>

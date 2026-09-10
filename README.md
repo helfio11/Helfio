@@ -21,4 +21,15 @@ npm run dev
 
 Category routes are available at `/api/v1/categories`, `/api/v1/categories/tree`, `/api/v1/categories/homepage`, `/api/v1/categories/navigation`, and `/api/v1/categories/:slug`.
 
-The database supports hierarchical categories and translations for `en`, `de`, `sq`, and `tr`. The current seed provides the visible German and Albanian homepage categories.
+The database supports hierarchical categories and translations for `en`, `de`, `sq`, and `tr`. Homepage category names are always read from the API and selected using the active locale, with English and then the first available translation as safe fallbacks.
+
+## Localization
+
+The frontend uses `vue-i18n` with typed locale resources in `src/i18n/locales/`. The supported locales are:
+
+- `en` - English
+- `de` - Deutsch
+- `sq` - Shqip
+- `tr` - Türkçe
+
+English is the default and fallback locale. The language selector updates the page immediately and persists the selected locale in `localStorage` under `helfio-locale`, so it is restored after refresh. Static homepage copy lives in the locale resources; dynamic category names and descriptions remain PostgreSQL/API data.

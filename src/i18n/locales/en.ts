@@ -1,0 +1,16 @@
+export default {
+  brandTagline: 'People. Help. Nearby.',
+  nav: { services: 'Services', customers: 'For customers', providers: 'For providers', about: 'About us', help: 'Help', login: 'Log in', register: 'Register for free' },
+  hero: {
+    free: '100% FREE', title: 'What do you need?', subtitle: 'Find verified service providers near you.', servicePlaceholder: 'Describe what you need ...', serviceHint: 'e.g. cleaning, electrician, moving ...', location: 'Postcode or city', locationHint: 'e.g. 88212 Ravensburg', findProviders: 'Find providers', popular: 'Popular:',
+    popularItems: { cleaning: 'Cleaning', electrician: 'Electrician', gardening: 'Gardening', moving: 'Moving', painter: 'Painter', car: 'Car repair' }, benefitTitle: 'For customers and providers\nfree of charge', benefitSubtitle: 'Free for customers and providers', verifiedProfiles: 'Verified profiles', realReviews: 'Real reviews', directContact: 'Direct contact', nearby: 'Near you', review: 'Finally, a platform\nthat is simple and fair!', reviewAuthor: 'Customer from Ravensburg',
+  },
+  categories: { title: 'All services', description: 'Discover our categories.', showAll: 'Show all categories' },
+  providers: {
+    title: 'Recommended providers near you', description: 'Verified. Rated. Reliable.', showAll: 'Show all', online: 'Online', availableToday: 'Available today', favorite: 'Favorite', reviews: 'reviews', profile: 'View profile',
+    items: { cleanTeam: { role: 'Home cleaning', tags: ['Home cleaning', 'Office cleaning'], price: 'from €24 / hour' }, mueller: { role: 'Crafts & assembly', tags: ['Painting', 'Drywall'], price: 'from €35 / hour' }, greenPartner: { role: 'Garden & landscaping', tags: ['Gardening', 'Hedge trimming'], price: 'from €28 / hour' }, schnellUmzug: { role: 'Moving & transport', tags: ['Moving', 'Clearance'], price: 'from €45 / hour' } },
+  },
+  steps: { kicker: "IT'S THAT EASY", title: 'Reach your goal in 4 steps', description: 'Just get started. Just help.', items: [{ title: 'Submit a request', accent: 'Tell us what you need and where.', description: 'Describe what you need and where.' }, { title: 'Receive suitable providers', accent: 'Get suitable offers', description: 'We find verified service providers near you.' }, { title: 'Contact directly', accent: 'Contact directly', description: 'Write or call directly.' }, { title: 'Job completed', accent: 'The job is done', description: 'Rate the service and help others.' }] },
+  cta: { kicker: 'READY?', title: 'Together it is easier.', description: 'Join Helfio and make a difference.', register: 'Register for free' },
+  footer: { tag: 'Marketplace', description: 'Professional services for home, projects, and everyday life.', company: 'Company', service: 'Service', legal: 'Legal', about: 'About us', careers: 'Careers', partners: 'Partners', customerService: 'Customer service', help: 'Help', reviews: 'Reviews', terms: 'Terms and conditions', privacy: 'Privacy', imprint: 'Legal notice' },
+} as const
