@@ -1,0 +1,5 @@
+<script setup lang="ts">
+defineProps<{ locale: 'de' | 'sq' }>()
+const emit = defineEmits<{ (e: 'change-locale', value: 'de' | 'sq'): void }>()
+</script>
+<template><header class="topbar"><div class="container topbar-inner"><a class="brand" href="#"><span class="brand-mark">⌂</span><span><strong>Helfio</strong><small>Menschen. Hilfe. Nähe.</small></span></a><nav><a href="#services">Dienstleistungen</a><a href="#providers">Für Kunden</a><a href="#how">Für Anbieter</a><a href="#about">Über uns</a><a href="#help">Hilfe</a></nav><div class="header-actions"><span>◉</span><button class="language" :class="{ active: locale === 'de' }" type="button" @click="emit('change-locale', 'de')">DE</button><span>|</span><button class="language" :class="{ active: locale === 'sq' }" type="button" @click="emit('change-locale', 'sq')">SQ</button><span>⌄</span><button class="login" type="button">Einloggen</button><button class="header-cta" type="button">Kostenlos registrieren</button></div></div></header></template>
