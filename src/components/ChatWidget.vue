@@ -1,0 +1,13 @@
+<script setup lang="ts">
+import { onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { getAccessToken } from '../auth/keycloak'
+const { t, locale } = useI18n(); const open = ref(false); const input = ref(''); const sending = ref(false); const messages = ref<{ role: 'user' | 'assistant'; content: string }[]>([])
+const storageKey = 'helfio-ai-guest'
+async function restore() { try { const token = await getAccessToken(); if (token) { const response = await fetch('/api/v1/ai/conversation', { headers: { authorization: `Bearer ${token}` } }); if (response.ok) { const payload = await response.json() as { data?: { messages?: { role: 'user' | 'assistant'; content: string }[] } | null }; messages.value = payload.data?.messages ?? []; return } } messages.value = JSON.parse(localStorage.getItem(storageKey) || '[]') } catch { messages.value = [] } }
+async function send() { const content = input.value.trim(); if (!content || sending.value) return; messages.value.push({ role: 'user', content }); input.value = ''; sending.value = true; const token = await getAccessToken(); try { const response = await fetch('/api/v1/ai/chat', { method: 'POST', headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ message: content, locale: locale.value }) }); const payload = await response.json() as { data?: { answer: string }; error?: string }; messages.value.push({ role: 'assistant', content: payload.data?.answer || payload.error || t('assistant.unavailable') }); localStorage.setItem(storageKey, JSON.stringify(messages.value.slice(-30))) } catch { messages.value.push({ role: 'assistant', content: t('assistant.unavailable') }) } finally { sending.value = false } }
+onMounted(() => { void restore() })
+</script>
+<template>
+  <div class="assistant-widget"><div v-if="open" class="assistant-window"><div class="assistant-header"><strong>{{ t('assistant.title') }}</strong><button type="button" :aria-label="t('assistant.close')" @click="open = false">×</button></div><div class="assistant-messages"><p v-if="!messages.length" class="assistant-empty">{{ t('assistant.greeting') }}</p><div v-for="(message, index) in messages" :key="index" class="assistant-message" :class="message.role"><span>{{ message.content }}</span></div></div><form class="assistant-form" @submit.prevent="send"><input v-model="input" :placeholder="t('assistant.placeholder')" maxlength="4000"><button type="submit" :disabled="sending" :aria-label="t('assistant.send')">→</button></form></div><button v-else class="assistant-launcher" type="button" :aria-label="t('assistant.open')" @click="open = true">✦</button></div>
+</template>

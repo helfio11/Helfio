@@ -308,3 +308,112 @@ export async function transitionJob(id: string, customerUserId: string, from: Jo
   if (!job) throw new Error('Job not found')
   return job
 }
+
+export type OfferStatus = 'PENDING' | 'ACCEPTED' | 'REJECTED' | 'WITHDRAWN'
+export interface OfferInput { price: number; currency: string; message: string; estimatedDuration?: string | null; availableFrom?: string | null }
+export interface Offer extends OfferInput { id: string; jobId: string; providerUserId: string; provider: ProviderProfile | null; status: OfferStatus; createdAt: string; updatedAt: string }
+
+function mapOffer(row: Record<string, unknown>, provider: ProviderProfile | null): Offer {
+  return { id: String(row.id), jobId: String(row.jobId), providerUserId: String(row.providerUserId), price: Number(row.price), currency: String(row.currency), message: String(row.message), estimatedDuration: row.estimatedDuration ? String(row.estimatedDuration) : null, availableFrom: row.availableFrom ? String(row.availableFrom).slice(0, 10) : null, status: row.status as OfferStatus, createdAt: String(row.createdAt), updatedAt: String(row.updatedAt), provider }
+}
+
+const offerSelect = `SELECT o.id, o.job_id AS "jobId", o.provider_user_id AS "providerUserId", o.price,
+  o.currency, o.message, o.estimated_duration AS "estimatedDuration", o.available_from AS "availableFrom",
+  o.status, o.created_at AS "createdAt", o.updated_at AS "updatedAt" FROM offers o`
+
+async function hydrateOffers(rows: Record<string, unknown>[]): Promise<Offer[]> {
+  return Promise.all(rows.map(async (row) => mapOffer(row, await getPublicProvider(String(row.providerUserId)))))
+}
+
+export async function getOpenJobsForProvider(categoryId?: string, city?: string): Promise<Job[]> {
+  const values: unknown[] = []
+  const filters = ["j.status = 'OPEN'"]
+  if (categoryId) { values.push(categoryId); filters.push(`j.category_id = $${values.length}`) }
+  if (city) { values.push(`%${city}%`); filters.push(`j.city ILIKE $${values.length}`) }
+  const result = await pool.query(`${jobSelect} WHERE ${filters.join(' AND ')} ORDER BY j.updated_at DESC LIMIT 100`, values)
+  return Promise.all(result.rows.map(mapJob))
+}
+
+export async function getOffersForJob(jobId: string): Promise<Offer[]> {
+  const result = await pool.query(`${offerSelect} WHERE o.job_id = $1 ORDER BY o.created_at`, [jobId])
+  return hydrateOffers(result.rows)
+}
+
+export async function getOffersForProvider(providerUserId: string): Promise<Offer[]> {
+  const result = await pool.query(`${offerSelect} WHERE o.provider_user_id = $1 ORDER BY o.updated_at DESC`, [providerUserId])
+  return hydrateOffers(result.rows)
+}
+
+export async function createOffer(jobId: string, providerUserId: string, input: OfferInput): Promise<Offer> {
+  let inserted
+  try {
+    inserted = await pool.query(`INSERT INTO offers (job_id, provider_user_id, price, currency, message, estimated_duration, available_from)
+      SELECT $1, $2, $3, $4, $5, $6, $7 FROM jobs j JOIN provider_profiles p ON p.user_id = $2
+      WHERE j.id = $1 AND j.status = 'OPEN' AND j.customer_user_id <> $2
+      RETURNING id`, [jobId, providerUserId, input.price, input.currency, input.message, input.estimatedDuration ?? null, input.availableFrom ?? null])
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === '23505') throw new Error('Duplicate active offer')
+    throw error
+  }
+  if (!inserted.rows[0]) throw new Error('Offer cannot be submitted')
+  const offer = await pool.query(`${offerSelect} WHERE o.id = $1`, [inserted.rows[0].id])
+  return (await hydrateOffers(offer.rows))[0]
+}
+
+export async function updateOffer(id: string, providerUserId: string, input: Partial<OfferInput>): Promise<Offer> {
+  const fields: string[] = ['updated_at = now()']; const values: unknown[] = [id, providerUserId]
+  for (const key of ['price', 'currency', 'message', 'estimatedDuration', 'availableFrom'] as const) {
+    if (input[key] !== undefined) { values.push(input[key]); fields.push(`${key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)} = $${values.length}`) }
+  }
+  const result = await pool.query(`UPDATE offers SET ${fields.join(', ')} WHERE id = $1 AND provider_user_id = $2 AND status = 'PENDING' RETURNING id`, values)
+  if (!result.rows[0]) throw new Error('Offer cannot be edited')
+  const offer = await pool.query(`${offerSelect} WHERE o.id = $1`, [id]); return (await hydrateOffers(offer.rows))[0]
+}
+
+export async function withdrawOffer(id: string, providerUserId: string): Promise<Offer> {
+  const result = await pool.query(`UPDATE offers SET status = 'WITHDRAWN', updated_at = now() WHERE id = $1 AND provider_user_id = $2 AND status = 'PENDING' RETURNING id`, [id, providerUserId])
+  if (!result.rows[0]) throw new Error('Offer cannot be withdrawn')
+  const offer = await pool.query(`${offerSelect} WHERE o.id = $1`, [id]); return (await hydrateOffers(offer.rows))[0]
+}
+
+export async function transitionOffer(id: string, customerUserId: string, next: 'ACCEPTED' | 'REJECTED'): Promise<Offer> {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const current = await client.query(`SELECT o.id, o.job_id FROM offers o JOIN jobs j ON j.id = o.job_id WHERE o.id = $1 AND j.customer_user_id = $2 FOR UPDATE`, [id, customerUserId])
+    if (!current.rows[0]) throw new Error('Offer ownership required')
+    if (next === 'ACCEPTED') {
+      const updated = await client.query(`UPDATE offers SET status = 'ACCEPTED', updated_at = now() WHERE id = $1 AND status = 'PENDING' RETURNING id`, [id])
+      if (!updated.rows[0]) throw new Error('Invalid offer transition')
+      await client.query(`UPDATE offers SET status = 'REJECTED', updated_at = now() WHERE job_id = $1 AND id <> $2 AND status = 'PENDING'`, [current.rows[0].job_id, id])
+      await client.query(`UPDATE jobs SET status = 'ASSIGNED', updated_at = now() WHERE id = $1 AND status = 'OPEN'`, [current.rows[0].job_id])
+    } else {
+      const updated = await client.query(`UPDATE offers SET status = 'REJECTED', updated_at = now() WHERE id = $1 AND status = 'PENDING' RETURNING id`, [id])
+      if (!updated.rows[0]) throw new Error('Invalid offer transition')
+    }
+    await client.query('COMMIT')
+  } catch (error) { await client.query('ROLLBACK'); throw error } finally { client.release() }
+  const offer = await pool.query(`${offerSelect} WHERE o.id = $1`, [id]); return (await hydrateOffers(offer.rows))[0]
+}
+
+export interface AiMessage { role: 'user' | 'assistant'; content: string; createdAt: string }
+export async function getAiConversation(userId: string): Promise<{ id: string; messages: AiMessage[] } | null> {
+  await pool.query(`DELETE FROM ai_conversations WHERE user_id = $1 AND expires_at <= now()`, [userId])
+  const conversation = await pool.query(`SELECT id FROM ai_conversations WHERE user_id = $1 ORDER BY updated_at DESC LIMIT 1`, [userId])
+  if (!conversation.rows[0]) return null
+  const messages = await pool.query<AiMessage>(`SELECT role, content, created_at AS "createdAt" FROM ai_messages WHERE conversation_id = $1 ORDER BY created_at`, [conversation.rows[0].id])
+  return { id: String(conversation.rows[0].id), messages: messages.rows }
+}
+export async function appendAiConversation(userId: string, userMessage: string, assistantMessage: string): Promise<{ id: string; messages: AiMessage[] }> {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const existing = await client.query(`SELECT id FROM ai_conversations WHERE user_id = $1 AND expires_at > now() ORDER BY updated_at DESC LIMIT 1 FOR UPDATE`, [userId])
+    const conversation = existing.rows[0] ? existing : await client.query(`INSERT INTO ai_conversations (user_id, expires_at) VALUES ($1, now() + interval '24 hours') RETURNING id`, [userId])
+    const id = conversation.rows[0].id
+    await client.query(`INSERT INTO ai_messages (conversation_id, role, content) VALUES ($1, 'user', $2), ($1, 'assistant', $3)`, [id, userMessage, assistantMessage])
+    await client.query(`UPDATE ai_conversations SET updated_at = now(), expires_at = now() + interval '24 hours' WHERE id = $1`, [id])
+    await client.query('COMMIT')
+    return { id, messages: [{ role: 'user', content: userMessage, createdAt: new Date().toISOString() }, { role: 'assistant', content: assistantMessage, createdAt: new Date().toISOString() }] }
+  } catch (error) { await client.query('ROLLBACK'); throw error } finally { client.release() }
+}

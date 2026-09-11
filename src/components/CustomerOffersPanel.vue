@@ -1,0 +1,14 @@
+<script setup lang="ts">
+import { onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { getAccessToken } from '../auth/keycloak'
+const { t } = useI18n(); interface Job { id: string; title: string; status: string }; interface Offer { id: string; price: number; currency: string; message: string; status: string; provider: { displayName: string; yearsExperience: number; availabilityStatus: string; city: string } | null }
+const jobs = ref<Job[]>([]); const selected = ref<Job | null>(null); const offers = ref<Offer[]>([])
+async function api(path: string, init?: RequestInit) { const token = await getAccessToken(); return fetch(path, { ...init, headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(init?.headers ?? {}) } }) }
+async function select(job: Job) { selected.value = job; const response = await api(`/api/v1/jobs/${job.id}/offers`); offers.value = response.ok ? (await response.json()).data : [] }
+async function action(offer: Offer, name: 'accept' | 'reject') { const response = await api(`/api/v1/offers/${offer.id}/${name}`, { method: 'POST' }); if (response.ok && selected.value) await select(selected.value) }
+onMounted(async () => { const response = await api('/api/v1/jobs'); if (response.ok) { jobs.value = (await response.json()).data; if (jobs.value[0]) await select(jobs.value[0]) } })
+</script>
+<template>
+  <section class="content-section container offers-panel"><div class="section-heading"><div><span class="section-kicker">{{ t('offers.customerKicker') }}</span><h2>{{ t('offers.customerTitle') }}</h2><p>{{ t('offers.customerDescription') }}</p></div></div><div class="offers-layout"><aside class="job-list"><p v-if="!jobs.length" class="job-empty">{{ t('offers.noJobs') }}</p><button v-for="job in jobs" :key="job.id" type="button" class="job-list-item" :class="{ selected: selected?.id === job.id }" @click="select(job)"><strong>{{ job.title }}</strong><span>{{ job.status }}</span></button></aside><div class="offer-list"><p v-if="selected && !offers.length" class="job-empty">{{ t('offers.noOffers') }}</p><article v-for="offer in offers" :key="offer.id" class="offer-card"><div><h3>{{ offer.provider?.displayName || t('offers.provider') }}</h3><p>{{ offer.message }}</p><small>{{ offer.price }} {{ offer.currency }} · {{ offer.provider?.yearsExperience ?? 0 }} {{ t('offers.years') }} · {{ offer.provider?.availabilityStatus || '' }}</small></div><div class="offer-actions"><strong>{{ offer.status }}</strong><button v-if="offer.status === 'PENDING' && selected?.status === 'OPEN'" class="header-cta" type="button" @click="action(offer, 'accept')">{{ t('offers.accept') }}</button><button v-if="offer.status === 'PENDING' && selected?.status === 'OPEN'" class="job-danger" type="button" @click="action(offer, 'reject')">{{ t('offers.reject') }}</button></div></article></div></div></section>
+</template>

@@ -79,3 +79,11 @@ Provider onboarding is shown to authenticated providers on the existing homepage
 Authenticated customers can create and manage their own PostgreSQL-backed service requests through `GET /api/v1/jobs`, `POST /api/v1/jobs`, `GET /api/v1/jobs/:id`, `PATCH /api/v1/jobs/:id`, `POST /api/v1/jobs/:id/publish`, and `POST /api/v1/jobs/:id/cancel`.
 
 Requests reference active database categories and include database-driven category translations. The customer lifecycle currently allows `DRAFT -> OPEN`, `DRAFT -> CANCELLED`, and `OPEN -> CANCELLED`; assignment and provider applications are reserved for later phases. Only active customers can access these routes, and ownership is enforced by the API.
+
+## Phase 7 Applications, Offers, and Helfio Assistant
+
+Migration `005_create_offers.sql` adds provider offers and 24-hour authenticated AI conversation storage. Providers can browse open jobs, submit one active offer per job, edit pending offers, and withdraw them. Customers can review offers for their own jobs, accept one offer transactionally, or reject pending offers. Acceptance marks the offer `ACCEPTED`, rejects the remaining pending offers, and prepares the job as `ASSIGNED`; later job execution states remain out of scope.
+
+Offer APIs are available at `/api/v1/provider/jobs`, `/api/v1/provider/jobs/:id`, `/api/v1/provider/offers`, `/api/v1/jobs/:id/offers`, `/api/v1/offers/:id`, `/api/v1/offers/:id/withdraw`, `/api/v1/offers/:id/accept`, and `/api/v1/offers/:id/reject`. Provider and customer ownership is enforced server-side.
+
+The global Helfio Assistant uses `POST /api/v1/ai/chat` and authenticated `GET /api/v1/ai/conversation`. OpenAI is server-only through `OPENAI_API_KEY` and optional `OPENAI_MODEL`; the Vue application never receives the key. The assistant receives bounded, authorized Helfio context, refuses off-topic or secret/system-prompt requests, times out safely, and stores authenticated history for 24 hours. Guests retain temporary browser history only. Missing OpenAI configuration returns a safe `503` while the rest of Helfio remains available.
