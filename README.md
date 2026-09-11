@@ -73,3 +73,9 @@ Provider endpoints:
 - `GET /api/v1/providers/:userId`
 
 Provider onboarding is shown to authenticated providers on the existing homepage and supports profile details, availability, starting price, visibility, and selecting active categories/subcategories. Homepage provider cards now use the public provider API; Jobs, Messaging, Reviews, and other later marketplace workflows remain out of scope.
+
+## Phase 6 Jobs / Service Requests
+
+Authenticated customers can create and manage their own PostgreSQL-backed service requests through `GET /api/v1/jobs`, `POST /api/v1/jobs`, `GET /api/v1/jobs/:id`, `PATCH /api/v1/jobs/:id`, `POST /api/v1/jobs/:id/publish`, and `POST /api/v1/jobs/:id/cancel`.
+
+Requests reference active database categories and include database-driven category translations. The customer lifecycle currently allows `DRAFT -> OPEN`, `DRAFT -> CANCELLED`, and `OPEN -> CANCELLED`; assignment and provider applications are reserved for later phases. Only active customers can access these routes, and ownership is enforced by the API.

@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { authenticate, hasRole, type AuthenticatedIdentity, type TokenVerifier } from './auth.js'
 import { buildCategoryTree, type CategoryNode } from './categories.js'
-import { findOrCreateUser, getPublicProvider, getPublicProviders, getProviderProfile, saveProviderProfile, setProviderServices, updateUserAccount, type PreferredLocale, type ProviderProfile, type ProviderProfileInput, type UserAccount } from './db.js'
+import { createJob, findOrCreateUser, getJob, getJobs, getPublicProvider, getPublicProviders, getProviderProfile, saveProviderProfile, setProviderServices, transitionJob, updateJob, updateUserAccount, type Job, type JobInput, type JobStatus, type PreferredLocale, type ProviderProfile, type ProviderProfileInput, type UserAccount } from './db.js'
 import { type ApplicationRole } from './roles.js'
 
 export interface AccountStore {
@@ -17,15 +17,25 @@ export interface ProviderStore {
   getPublicProviders(): Promise<ProviderProfile[]>
 }
 
+export interface JobStore {
+  getJobs(customerUserId: string): Promise<Job[]>
+  getJob(id: string, customerUserId?: string): Promise<Job | null>
+  createJob(customerUserId: string, input: JobInput): Promise<Job>
+  updateJob(id: string, customerUserId: string, changes: Partial<JobInput>): Promise<Job>
+  transitionJob(id: string, customerUserId: string, from: JobStatus, to: JobStatus): Promise<Job>
+}
+
 export interface ApiDependencies {
   verifier: TokenVerifier
   accounts?: AccountStore
   providers?: ProviderStore
+  jobs?: JobStore
   getCategories?: (filter?: string) => Promise<Awaited<ReturnType<typeof import('./db.js').getCategories>>>
 }
 
 const defaultAccounts: AccountStore = { findOrCreateUser, updateUserAccount }
 const defaultProviders: ProviderStore = { getProviderProfile, saveProviderProfile, setProviderServices, getPublicProvider, getPublicProviders }
+const defaultJobs: JobStore = { getJobs, getJob, createJob, updateJob, transitionJob }
 const locales = new Set<PreferredLocale>(['en', 'de', 'sq', 'tr'])
 
 function sendJson(response: ServerResponse, status: number, body: unknown) {
@@ -115,6 +125,74 @@ async function requireProvider(request: IncomingMessage, response: ServerRespons
   return authenticated
 }
 
+async function requireCustomer(request: IncomingMessage, response: ServerResponse, dependencies: ApiDependencies) {
+  const authenticated = await requireAccount(request, response, dependencies)
+  if (!authenticated) return null
+  if (!hasRole(authenticated.identity, 'CUSTOMER')) {
+    sendJson(response, 403, { error: 'Customer role required' })
+    return null
+  }
+  return authenticated
+}
+
+const jobStatuses = new Set<JobStatus>(['DRAFT', 'OPEN', 'ASSIGNED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED'])
+const budgetTypes = new Set(['FIXED', 'RANGE', 'NEGOTIABLE'])
+const currencies = new Set(['EUR', 'USD', 'GBP', 'CHF'])
+
+function validDate(value: unknown) {
+  if (value === null || value === undefined) return true
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+  const date = new Date(`${value}T00:00:00Z`)
+  return !Number.isNaN(date.valueOf()) && date.toISOString().slice(0, 10) === value
+}
+
+function jobInput(body: Record<string, unknown>, partial = false): JobInput | Partial<JobInput> | null {
+  const required = ['categoryId', 'title', 'description', 'city', 'countryCode', 'budgetType', 'currency']
+  if (!partial && required.some((key) => typeof body[key] !== 'string')) return null
+  const allowed = new Set([...required, 'postalCode', 'budgetMin', 'budgetMax', 'preferredDate', 'preferredTimeText'])
+  if (Object.keys(body).some((key) => !allowed.has(key))) return null
+  const result: Partial<JobInput> = {}
+  if (body.categoryId !== undefined && typeof body.categoryId !== 'string') return null
+  if (body.title !== undefined && typeof body.title !== 'string') return null
+  if (body.description !== undefined && typeof body.description !== 'string') return null
+  if (body.city !== undefined && typeof body.city !== 'string') return null
+  if (body.countryCode !== undefined && typeof body.countryCode !== 'string') return null
+  if (body.budgetType !== undefined && typeof body.budgetType !== 'string') return null
+  if (body.currency !== undefined && typeof body.currency !== 'string') return null
+  if (body.categoryId !== undefined && typeof body.categoryId === 'string') result.categoryId = body.categoryId
+  if (body.title !== undefined && typeof body.title === 'string') result.title = body.title.trim()
+  if (body.description !== undefined && typeof body.description === 'string') result.description = body.description.trim()
+  if (body.city !== undefined && typeof body.city === 'string') result.city = body.city.trim()
+  if (body.postalCode !== undefined) result.postalCode = body.postalCode === null ? null : typeof body.postalCode === 'string' ? body.postalCode.trim() : undefined
+  if (body.countryCode !== undefined && typeof body.countryCode === 'string') result.countryCode = body.countryCode.trim().toUpperCase()
+  if (body.budgetType !== undefined && typeof body.budgetType === 'string') result.budgetType = body.budgetType as JobInput['budgetType']
+  if (body.currency !== undefined && typeof body.currency === 'string') result.currency = body.currency.trim().toUpperCase()
+  for (const key of ['budgetMin', 'budgetMax'] as const) {
+    if (body[key] !== undefined) result[key] = body[key] === null ? null : typeof body[key] === 'number' && Number.isFinite(body[key]) ? body[key] : undefined
+  }
+  for (const key of ['preferredDate', 'preferredTimeText'] as const) {
+    if (body[key] !== undefined) result[key] = body[key] === null ? null : typeof body[key] === 'string' ? body[key].trim() : undefined
+  }
+  if (Object.values(result).some((value) => value === undefined)) return null
+  if (result.title !== undefined && (result.title.length < 1 || result.title.length > 160)) return null
+  if (result.description !== undefined && (result.description.length < 1 || result.description.length > 4000)) return null
+  if (result.city !== undefined && (result.city.length < 1 || result.city.length > 120)) return null
+  if (result.postalCode !== undefined && result.postalCode !== null && (result.postalCode.length < 1 || result.postalCode.length > 20)) return null
+  if (result.countryCode !== undefined && !/^[A-Z]{2}$/.test(result.countryCode)) return null
+  if (result.budgetType !== undefined && !budgetTypes.has(result.budgetType)) return null
+  if (result.currency !== undefined && !currencies.has(result.currency)) return null
+  if (result.budgetMin !== undefined && result.budgetMin !== null && result.budgetMin < 0) return null
+  if (result.budgetMax !== undefined && result.budgetMax !== null && result.budgetMax < 0) return null
+  if (result.preferredDate !== undefined && !validDate(result.preferredDate)) return null
+  if (result.preferredTimeText !== undefined && result.preferredTimeText !== null && result.preferredTimeText.length > 120) return null
+  if (!partial && (result.budgetMin === undefined || result.budgetMax === undefined || result.postalCode === undefined || result.preferredDate === undefined || result.preferredTimeText === undefined)) {
+    result.budgetMin ??= null; result.budgetMax ??= null; result.postalCode ??= null; result.preferredDate ??= null; result.preferredTimeText ??= null
+  }
+  return result as JobInput | Partial<JobInput>
+}
+
+function jobResponse(job: Job) { return { ...job, category: job.category } }
+
 function providerInput(body: Record<string, unknown>): ProviderProfileInput | null {
   const requiredStrings = ['displayName', 'description', 'city', 'postalCode']
   if (requiredStrings.some((key) => typeof body[key] !== 'string')) return null
@@ -178,6 +256,53 @@ export function createApiHandler(dependencies: ApiDependencies) {
       if (request.method === 'GET' && url.pathname === '/api/v1/authz/customer') return roleRoute(request, response, dependencies, 'CUSTOMER')
       if (request.method === 'GET' && url.pathname === '/api/v1/authz/provider') return roleRoute(request, response, dependencies, 'PROVIDER')
       if (request.method === 'GET' && url.pathname === '/api/v1/authz/admin') return roleRoute(request, response, dependencies, 'ADMIN')
+
+      const jobs = dependencies.jobs ?? defaultJobs
+      if (url.pathname === '/api/v1/jobs' && (request.method === 'GET' || request.method === 'POST')) {
+        const authenticated = await requireCustomer(request, response, dependencies)
+        if (!authenticated) return
+        if (request.method === 'GET') {
+          sendJson(response, 200, { data: await jobs.getJobs(authenticated.account.id) })
+          return
+        }
+        const input = jobInput(await readBody(request))
+        const createInput = input as JobInput | null
+        if (!createInput || createInput.budgetMin !== null && createInput.budgetMax !== null && createInput.budgetMin > createInput.budgetMax) {
+          sendJson(response, 400, { error: 'Invalid job request' }); return
+        }
+        try { sendJson(response, 201, { data: jobResponse(await jobs.createJob(authenticated.account.id, createInput)) }) }
+        catch (error) { if (error instanceof Error && error.message === 'Invalid active category') sendJson(response, 400, { error: error.message }); else throw error }
+        return
+      }
+      const jobMatch = url.pathname.match(/^\/api\/v1\/jobs\/([^/]+)(?:\/(publish|cancel))?$/)
+      if (jobMatch && (request.method === 'GET' || request.method === 'PATCH' || request.method === 'POST')) {
+        const authenticated = await requireCustomer(request, response, dependencies)
+        if (!authenticated) return
+        const jobId = jobMatch[1]
+        if (!/^[0-9a-f-]{36}$/.test(jobId)) { sendJson(response, 400, { error: 'Invalid job id' }); return }
+        const current = await jobs.getJob(jobId)
+        if (!current) { sendJson(response, 404, { error: 'Job not found' }); return }
+        if (current.customerUserId !== authenticated.account.id) { sendJson(response, 403, { error: 'Job ownership required' }); return }
+        if (!jobMatch[2] && request.method === 'GET') { sendJson(response, 200, { data: jobResponse(current) }); return }
+        if (jobMatch[2] === 'publish' && request.method === 'POST') {
+          if (current.status !== 'DRAFT') { sendJson(response, 400, { error: 'Invalid job transition' }); return }
+          sendJson(response, 200, { data: jobResponse(await jobs.transitionJob(jobId, authenticated.account.id, 'DRAFT', 'OPEN')) }); return
+        }
+        if (jobMatch[2] === 'cancel' && request.method === 'POST') {
+          if (current.status !== 'DRAFT' && current.status !== 'OPEN') { sendJson(response, 400, { error: 'Invalid job transition' }); return }
+          sendJson(response, 200, { data: jobResponse(await jobs.transitionJob(jobId, authenticated.account.id, current.status, 'CANCELLED')) }); return
+        }
+        if (request.method !== 'PATCH' || jobMatch[2]) { sendJson(response, 404, { error: 'Not found' }); return }
+        if (current.status !== 'DRAFT' && current.status !== 'OPEN') { sendJson(response, 400, { error: 'Job cannot be edited in this state' }); return }
+        const changes = jobInput(await readBody(request), true)
+        const merged = changes ? { ...current, ...changes } : null
+        if (!changes || !merged || (merged.budgetMin !== null && merged.budgetMax !== null && merged.budgetMin > merged.budgetMax)) {
+          sendJson(response, 400, { error: 'Invalid job request' }); return
+        }
+        try { sendJson(response, 200, { data: jobResponse(await jobs.updateJob(jobId, authenticated.account.id, changes)) }) }
+        catch (error) { if (error instanceof Error && error.message === 'Invalid active category') sendJson(response, 400, { error: error.message }); else throw error }
+        return
+      }
 
       const providers = dependencies.providers ?? defaultProviders
       if ((request.method === 'GET' || request.method === 'POST' || request.method === 'PUT' || request.method === 'PATCH') && url.pathname === '/api/v1/provider/profile') {

@@ -3,7 +3,7 @@ import { createServer, type Server } from 'node:http'
 import test from 'node:test'
 import { createApiHandler, type AccountStore } from './app.js'
 import type { AuthenticatedIdentity, TokenVerifier } from './auth.js'
-import type { PreferredLocale, ProviderProfile, ProviderProfileInput, UserAccount } from './db.js'
+import type { Job, JobInput, JobStatus, PreferredLocale, ProviderProfile, ProviderProfileInput, UserAccount } from './db.js'
 
 const identity: AuthenticatedIdentity = { subject: 'kc-user-1', email: 'user@example.com', displayName: 'Test User', roles: ['CUSTOMER'] }
 const baseAccount: UserAccount = { id: 'user-1', keycloakSubjectId: identity.subject, email: identity.email, displayName: identity.displayName, preferredLocale: 'en', accountStatus: 'ACTIVE', createdAt: '2026-01-01', updatedAt: '2026-01-01' }
@@ -12,12 +12,14 @@ class FakeVerifier implements TokenVerifier {
   async verify(token: string): Promise<AuthenticatedIdentity> {
     if (token === 'valid') return identity
     if (token === 'provider') return providerIdentity
+    if (token === 'other') return otherCustomerIdentity
     if (token === 'admin') return { ...identity, roles: ['ADMIN'] }
     throw new Error('invalid token')
   }
 }
 
 const providerIdentity: AuthenticatedIdentity = { subject: 'kc-provider-1', email: 'provider@example.com', displayName: 'Provider User', roles: ['PROVIDER'] }
+const otherCustomerIdentity: AuthenticatedIdentity = { subject: 'kc-customer-2', email: 'other@example.com', displayName: 'Other Customer', roles: ['CUSTOMER'] }
 const providerAccount: UserAccount = { ...baseAccount, id: '11111111-1111-4111-8111-111111111111', keycloakSubjectId: providerIdentity.subject }
 const providerProfile: ProviderProfile = {
   userId: providerAccount.id, displayName: 'Provider Pro', description: 'Professional service provider', profileImageRef: 'profile.jpg',
@@ -25,6 +27,8 @@ const providerProfile: ProviderProfile = {
   availabilityStatus: 'AVAILABLE', yearsExperience: 8, startingPrice: 35, currency: 'EUR', visibility: 'PUBLIC', verificationStatus: 'UNVERIFIED',
   createdAt: '2026-01-01', updatedAt: '2026-01-01', services: [{ id: 'category-1', slug: 'cleaning', icon: 'C', translations: { en: { name: 'Cleaning', description: null }, de: { name: 'Reinigung', description: null }, sq: { name: 'Pastrim', description: null }, tr: { name: 'Temizlik', description: null } } }],
 }
+const jobCategory = { id: 'category-1', parentId: null, slug: 'cleaning', status: 'active' as const, icon: 'C', sortOrder: 1, showInNavigation: true, showOnHomepage: true, createdAt: '2026-01-01', updatedAt: '2026-01-01', translations: { en: { name: 'Cleaning', description: 'Home cleaning' }, de: { name: 'Reinigung', description: 'Haushaltsreinigung' }, sq: { name: 'Pastrim', description: 'Pastrim shtepie' }, tr: { name: 'Temizlik', description: 'Ev temizligi' } } }
+const jobBase: Job = { id: '33333333-3333-4333-8333-333333333333', customerUserId: baseAccount.id, categoryId: jobCategory.id, title: 'Clean my flat', description: 'Two rooms and a kitchen.', city: 'Ravensburg', postalCode: '88212', countryCode: 'DE', budgetType: 'RANGE', budgetMin: 50, budgetMax: 100, currency: 'EUR', preferredDate: null, preferredTimeText: null, status: 'DRAFT', createdAt: '2026-01-01', updatedAt: '2026-01-01', category: jobCategory }
 
 class FakeProviders {
   profile: ProviderProfile | null = null
@@ -37,6 +41,32 @@ class FakeProviders {
   async getPublicProviders() { return this.profile?.visibility === 'PUBLIC' ? [this.profile] : [] }
 }
 
+class FakeJobs {
+  jobs = new Map([[jobBase.id, { ...jobBase }]])
+  async getJobs(customerUserId: string) { return [...this.jobs.values()].filter((job) => job.customerUserId === customerUserId) }
+  async getJob(id: string) { return this.jobs.get(id) ?? null }
+  async createJob(customerUserId: string, input: JobInput) {
+    if (input.categoryId !== jobCategory.id) throw new Error('Invalid active category')
+    const job = { ...jobBase, ...input, id: '44444444-4444-4444-8444-444444444444', customerUserId, status: 'DRAFT' as const }
+    this.jobs.set(job.id, job)
+    return job
+  }
+  async updateJob(id: string, customerUserId: string, changes: Partial<JobInput>) {
+    const job = this.jobs.get(id)
+    if (!job || job.customerUserId !== customerUserId) throw new Error('Job not found')
+    const updated = { ...job, ...changes, updatedAt: '2026-01-02' }
+    this.jobs.set(id, updated)
+    return updated
+  }
+  async transitionJob(id: string, customerUserId: string, from: JobStatus, to: JobStatus) {
+    const job = this.jobs.get(id)
+    if (!job || job.customerUserId !== customerUserId || job.status !== from) throw new Error('Invalid job transition')
+    const updated = { ...job, status: to }
+    this.jobs.set(id, updated)
+    return updated
+  }
+}
+
 class FakeAccounts implements AccountStore {
   account = { ...baseAccount }
   calls = 0
@@ -46,6 +76,7 @@ class FakeAccounts implements AccountStore {
     this.calls += 1
     if (this.calls === 1) this.creates += 1
     if (currentIdentity.subject === providerIdentity.subject) return providerAccount
+    if (currentIdentity.subject === otherCustomerIdentity.subject) return { ...this.account, id: '22222222-2222-4222-8222-222222222222', keycloakSubjectId: currentIdentity.subject, email: currentIdentity.email, displayName: currentIdentity.displayName }
     this.account = { ...this.account, keycloakSubjectId: currentIdentity.subject, email: currentIdentity.email, displayName: currentIdentity.displayName }
     return this.account
   }
@@ -57,8 +88,8 @@ class FakeAccounts implements AccountStore {
   }
 }
 
-async function withServer(accounts: FakeAccounts, callback: (baseUrl: string) => Promise<void>, providers?: FakeProviders) {
-  const server: Server = createServer(createApiHandler({ verifier: new FakeVerifier(), accounts, providers }))
+async function withServer(accounts: FakeAccounts, callback: (baseUrl: string) => Promise<void>, providers?: FakeProviders, jobs?: FakeJobs) {
+  const server: Server = createServer(createApiHandler({ verifier: new FakeVerifier(), accounts, providers, jobs }))
   await new Promise<void>((resolve) => server.listen(0, resolve))
   const address = server.address()
   if (!address || typeof address === 'string') throw new Error('No test server address')
@@ -161,4 +192,31 @@ test('provider ownership and public profile fields are enforced', async () => {
     assert.equal((await request(baseUrl, '/api/v1/provider/profile', { method: 'PUT', headers: { authorization: 'Bearer provider', 'content-type': 'application/json' }, body: JSON.stringify({ displayName: 'Other', description: '', city: 'City', postalCode: '00000', serviceRadiusKm: 1, availabilityStatus: 'AVAILABLE', yearsExperience: 0, currency: 'EUR', visibility: 'PRIVATE' }) })).status, 200)
     assert.equal(providers.profile?.userId, providerAccount.id)
   }, providers)
+})
+
+test('customer jobs enforce roles, ownership, validation, translations, and lifecycle', async () => {
+  const accounts = new FakeAccounts()
+  const jobs = new FakeJobs()
+  await withServer(accounts, async (baseUrl) => {
+    const customerHeaders = { authorization: 'Bearer valid', 'content-type': 'application/json' }
+    const providerHeaders = { authorization: 'Bearer provider', 'content-type': 'application/json' }
+    const payload = { categoryId: 'category-1', title: 'Clean my flat', description: 'Two rooms and a kitchen.', city: 'Ravensburg', postalCode: '88212', countryCode: 'DE', budgetType: 'RANGE', budgetMin: 50, budgetMax: 100, currency: 'EUR' }
+    assert.equal((await request(baseUrl, '/api/v1/jobs', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })).status, 401)
+    assert.equal((await request(baseUrl, '/api/v1/jobs', { method: 'POST', headers: providerHeaders, body: JSON.stringify(payload) })).status, 403)
+    assert.equal((await request(baseUrl, '/api/v1/jobs', { method: 'POST', headers: customerHeaders, body: JSON.stringify({ ...payload, categoryId: 'missing' }) })).status, 400)
+    assert.equal((await request(baseUrl, '/api/v1/jobs', { method: 'POST', headers: customerHeaders, body: JSON.stringify({ ...payload, budgetMin: 101 }) })).status, 400)
+    const created = await request(baseUrl, '/api/v1/jobs', { method: 'POST', headers: customerHeaders, body: JSON.stringify(payload) })
+    assert.equal(created.status, 201)
+    const createdBody = await created.json() as { data: Job }
+    assert.equal(createdBody.data.status, 'DRAFT')
+    assert.deepEqual(Object.keys(createdBody.data.category.translations).sort(), ['de', 'en', 'sq', 'tr'])
+    const id = createdBody.data.id
+    assert.equal((await request(baseUrl, `/api/v1/jobs/${id}`, { method: 'PATCH', headers: { ...customerHeaders, authorization: 'Bearer other' }, body: JSON.stringify({ title: 'No access' }) })).status, 403)
+    assert.equal((await request(baseUrl, `/api/v1/jobs/${id}`, { method: 'PATCH', headers: customerHeaders, body: JSON.stringify({ title: 'Updated request' }) })).status, 200)
+    assert.equal((await request(baseUrl, `/api/v1/jobs/${id}/publish`, { method: 'POST', headers: customerHeaders })).status, 200)
+    assert.equal((await request(baseUrl, `/api/v1/jobs/${id}/publish`, { method: 'POST', headers: customerHeaders })).status, 400)
+    assert.equal((await request(baseUrl, `/api/v1/jobs/${id}`, { method: 'PATCH', headers: customerHeaders, body: JSON.stringify({ title: 'Updated open request' }) })).status, 200)
+    assert.equal((await request(baseUrl, `/api/v1/jobs/${id}/cancel`, { method: 'POST', headers: customerHeaders })).status, 200)
+    assert.equal((await request(baseUrl, `/api/v1/jobs/${id}`, { method: 'PATCH', headers: customerHeaders, body: JSON.stringify({ title: 'Cannot edit' }) })).status, 400)
+  }, undefined, jobs)
 })
