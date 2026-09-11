@@ -59,3 +59,17 @@ For GitHub Codespaces, set the browser-facing public URLs before starting the se
 `npm run keycloak:configure-dev` derives the Codespaces frontend URL from `CODESPACE_NAME` and `GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN` when `KEYCLOAK_FRONTEND_PUBLIC_URL` is unset, and adds that exact URL to the development client's redirect, web-origin, and post-logout settings. Keycloak does not accept arbitrary host wildcards for redirect URIs, so this explicit environment-driven step avoids hardcoding one Codespace hostname and does not broaden production origins.
 
 Required environment variables are listed in `.env.example`. `GET /api/v1/me` returns the local account and validated application roles. `PATCH /api/v1/me` accepts only `displayName` and `preferredLocale` (`en`, `de`, `sq`, or `tr`). Account credentials remain in Keycloak; Helfio PostgreSQL owns only application profile and account state (`ACTIVE`, `SUSPENDED`, or `DISABLED`). Future Java/Spring Boot services should use the same issuer, JWKS, audience, and realm roles rather than duplicating this user/auth domain.
+
+## Phase 5 Provider Profiles
+
+Provider profiles are stored in `provider_profiles` and linked to dynamic PostgreSQL categories through `provider_services`. No service names are duplicated in the frontend. Only authenticated users with the validated `PROVIDER` role can manage their own profile; customer and unauthenticated requests receive `403` and `401` respectively. Profile visibility controls public exposure, and public responses omit private contact fields while returning a rating placeholder until the Reviews phase.
+
+Provider endpoints:
+
+- `GET /api/v1/provider/profile`
+- `PUT /api/v1/provider/profile`
+- `PUT /api/v1/provider/services` with `{ "categoryIds": ["..."] }`
+- `GET /api/v1/providers/homepage`
+- `GET /api/v1/providers/:userId`
+
+Provider onboarding is shown to authenticated providers on the existing homepage and supports profile details, availability, starting price, visibility, and selecting active categories/subcategories. Homepage provider cards now use the public provider API; Jobs, Messaging, Reviews, and other later marketplace workflows remain out of scope.
