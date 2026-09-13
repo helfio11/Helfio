@@ -26,6 +26,11 @@ export async function closeDatabase() {
   await pool.end()
 }
 
+export async function checkDatabaseHealth() {
+  await pool.query('SELECT 1')
+  return true
+}
+
 async function withTransaction<T>(callback: (client: SqlClient) => Promise<T>): Promise<T> {
   const client = await pool.connect()
   try {
@@ -55,27 +60,46 @@ export interface UserAccount {
   accountStatus: AccountStatus
   createdAt: string
   updatedAt: string
+  anonymizedAt?: string | null
 }
 
 function mapUser(row: Record<string, unknown>): UserAccount {
   return {
     id: String(row.id), keycloakSubjectId: String(row.keycloakSubjectId), email: row.email ? String(row.email) : null,
     displayName: row.displayName ? String(row.displayName) : null, preferredLocale: row.preferredLocale as PreferredLocale,
-    accountStatus: row.accountStatus as AccountStatus, createdAt: String(row.createdAt), updatedAt: String(row.updatedAt),
+    accountStatus: row.accountStatus as AccountStatus, createdAt: String(row.createdAt), updatedAt: String(row.updatedAt), anonymizedAt: row.anonymizedAt ? String(row.anonymizedAt) : null,
   }
 }
 
 const userSelect = `SELECT id, keycloak_subject_id AS "keycloakSubjectId", email, display_name AS "displayName",
-  preferred_locale AS "preferredLocale", account_status AS "accountStatus", created_at AS "createdAt", updated_at AS "updatedAt"
+  preferred_locale AS "preferredLocale", account_status AS "accountStatus", anonymized_at AS "anonymizedAt", created_at AS "createdAt", updated_at AS "updatedAt"
   FROM users`
 
 export async function findOrCreateUser(identity: AuthenticatedIdentity): Promise<UserAccount> {
   const created = await pool.query(`INSERT INTO users (keycloak_subject_id, email, display_name)
     VALUES ($1, $2, $3)
-    ON CONFLICT (keycloak_subject_id) DO UPDATE SET email = EXCLUDED.email, display_name = EXCLUDED.display_name
+    ON CONFLICT (keycloak_subject_id) DO UPDATE SET email = CASE WHEN users.anonymized_at IS NULL THEN EXCLUDED.email ELSE users.email END,
+      display_name = CASE WHEN users.anonymized_at IS NULL THEN EXCLUDED.display_name ELSE users.display_name END
     RETURNING id, keycloak_subject_id AS "keycloakSubjectId", email, display_name AS "displayName",
-      preferred_locale AS "preferredLocale", account_status AS "accountStatus", created_at AS "createdAt", updated_at AS "updatedAt"`, [identity.subject, identity.email, identity.displayName])
+      preferred_locale AS "preferredLocale", account_status AS "accountStatus", anonymized_at AS "anonymizedAt", created_at AS "createdAt", updated_at AS "updatedAt"`, [identity.subject, identity.email, identity.displayName])
   return mapUser(created.rows[0])
+}
+
+export async function anonymizeUserAccount(id: string): Promise<UserAccount> {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const result = await client.query(`UPDATE users SET email = NULL, display_name = 'Deleted user', account_status = 'DISABLED', anonymized_at = COALESCE(anonymized_at, now()), updated_at = now() WHERE id = $1 RETURNING id`, [id])
+    if (!result.rows[0]) throw new Error('User not found')
+    await client.query(`UPDATE provider_profiles SET display_name = 'Deleted provider', description = '', profile_image_ref = NULL,
+      phone = NULL, contact_email = NULL, visibility = 'PRIVATE', verification_status = 'UNVERIFIED', updated_at = now() WHERE user_id = $1`, [id])
+    await client.query('DELETE FROM provider_services WHERE provider_user_id = $1', [id])
+    await client.query('DELETE FROM push_subscriptions WHERE user_id = $1', [id])
+    await client.query('DELETE FROM ai_conversations WHERE user_id = $1', [id])
+    await client.query('COMMIT')
+  } catch (error) { await client.query('ROLLBACK'); throw error } finally { client.release() }
+  const account = await pool.query(`${userSelect} WHERE id = $1`, [id])
+  return mapUser(account.rows[0])
 }
 
 export async function updateUserAccount(id: string, changes: { displayName?: string | null; preferredLocale?: PreferredLocale }): Promise<UserAccount> {
@@ -410,7 +434,7 @@ export async function createJob(customerUserId: string, input: JobInput): Promis
       (customer_user_id, category_id, title, description, city, postal_code, country_code, budget_type, budget_min, budget_max, currency, preferred_date, preferred_time_text)
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING id`,
     [customerUserId, input.categoryId, input.title, input.description, input.city, input.postalCode, input.countryCode, input.budgetType, input.budgetMin, input.budgetMax, input.currency, input.preferredDate, input.preferredTimeText])
-    await appendEvent(client, 'job.created', String(result.rows[0].id), { customerUserId, title: input.title, recipientUserIds: [customerUserId] })
+    await appendEvent(client, 'job.created', String(result.rows[0].id), { customerUserId, recipientUserIds: [customerUserId] })
     return result.rows[0].id
   })
   const job = await findJob(jobId, customerUserId)
@@ -655,8 +679,8 @@ async function hydrateConversation(row: Record<string, unknown>, userId: string)
   return { id: String(row.id), customerUserId: String(row.customerUserId), providerUserId: String(row.providerUserId), jobId: String(row.jobId), offerId: row.offerId ? String(row.offerId) : null, jobTitle: String(row.jobTitle), offerStatus: row.offerStatus as OfferStatus | null, updatedAt: String(row.updatedAt), messages: messages.rows.map(mapMessage), unreadCount: Number(unread.rows[0].count) }
 }
 
-export async function getConversations(userId: string): Promise<Conversation[]> {
-  const result = await pool.query(`${conversationSelect} WHERE c.customer_user_id = $1 OR c.provider_user_id = $1 ORDER BY c.updated_at DESC`, [userId])
+export async function getConversations(userId: string, limit = 50, offset = 0): Promise<Conversation[]> {
+  const result = await pool.query(`${conversationSelect} WHERE c.customer_user_id = $1 OR c.provider_user_id = $1 ORDER BY c.updated_at DESC LIMIT $2 OFFSET $3`, [userId, Math.min(100, Math.max(1, limit)), Math.max(0, offset)])
   return Promise.all(result.rows.map((row) => hydrateConversation(row, userId)))
 }
 
@@ -687,7 +711,7 @@ export async function sendMessage(conversationId: string, userId: string, conten
       RETURNING id, conversation_id AS "conversationId", sender_user_id AS "senderUserId", content, read_at AS "readAt", created_at AS "createdAt"`, [conversationId, userId, content])
     await client.query(`UPDATE conversations SET updated_at = now() WHERE id = $1`, [conversationId])
     const recipientUserId = String(participant.rows[0].customerUserId) === userId ? String(participant.rows[0].providerUserId) : String(participant.rows[0].customerUserId)
-    await appendEvent(client, 'message.created', String(inserted.rows[0].id), { conversationId, messagePreview: content.slice(0, 240), recipientUserIds: [recipientUserId] })
+    await appendEvent(client, 'message.created', String(inserted.rows[0].id), { conversationId, recipientUserIds: [recipientUserId] })
     await client.query('COMMIT')
     return mapMessage(inserted.rows[0])
   } catch (error) { await client.query('ROLLBACK'); throw error } finally { client.release() }

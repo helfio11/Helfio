@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { appendDomainEvent, type SqlClient } from './events.js'
 import { notificationText } from './notifications.js'
+import { MAX_EVENT_ATTEMPTS, retryDelaySeconds } from './event-worker.js'
 
 const aggregateId = '11111111-1111-4111-8111-111111111111'
 
@@ -26,4 +27,11 @@ test('every required domain event has localized notification text', () => {
     assert.ok(text.title.en && text.title.de && text.title.sq && text.title.tr, eventType)
     assert.ok(text.body.en && text.body.de && text.body.sq && text.body.tr, eventType)
   }
+})
+
+test('event retries use bounded exponential backoff', () => {
+  assert.equal(MAX_EVENT_ATTEMPTS, 8)
+  assert.equal(retryDelaySeconds(1), 2)
+  assert.equal(retryDelaySeconds(8), 256)
+  assert.equal(retryDelaySeconds(100), 256)
 })

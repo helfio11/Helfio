@@ -1,8 +1,9 @@
+import { randomUUID } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { authenticate, hasRole, type AuthenticatedIdentity, type TokenVerifier } from './auth.js'
 import { createOpenAiProvider, type AiModelResponse, type AiToolCall, type AiToolDefinition } from './ai.js'
 import { buildCategoryTree, type CategoryNode } from './categories.js'
-import { appendAiConversation, confirmJob, createConversation, createJob, createOffer, createReview, findOrCreateUser, finishJob, getAiConversation, getAssignedJobs, getConversation, getConversations, getJob, getJobs, getOffersForJob, getOffersForProvider, getOpenJobsForProvider, getPublicProvider, getPublicProviders, getProviderProfile, getProviderRating, getProviderReviews, getPushSubscriptions, getUnreadMessageCount, markConversationRead, savePushSubscription, searchMarketplace, saveProviderProfile, setProviderServices, sendMessage, startJob, transitionJob, transitionOffer, updateJob, updateOffer, updateUserAccount, withdrawOffer, type AvailabilityStatus, type Conversation, type ConversationInput, type Job, type JobInput, type JobStatus, type Message, type Offer, type OfferInput, type PreferredLocale, type ProviderProfile, type ProviderProfileInput, type PushSubscription, type RatingSummary, type Review, type ReviewInput, type SearchInput, type SearchKind, type SearchResults, type SearchSort, type UserAccount } from './db.js'
+import { anonymizeUserAccount, appendAiConversation, confirmJob, createConversation, createJob, createOffer, createReview, findOrCreateUser, finishJob, getAiConversation, getAssignedJobs, getConversation, getConversations, getJob, getJobs, getOffersForJob, getOffersForProvider, getOpenJobsForProvider, getPublicProvider, getPublicProviders, getProviderProfile, getProviderRating, getProviderReviews, getPushSubscriptions, getUnreadMessageCount, markConversationRead, savePushSubscription, searchMarketplace, saveProviderProfile, setProviderServices, sendMessage, startJob, transitionJob, transitionOffer, updateJob, updateOffer, updateUserAccount, withdrawOffer, type AvailabilityStatus, type Conversation, type ConversationInput, type Job, type JobInput, type JobStatus, type Message, type Offer, type OfferInput, type PreferredLocale, type ProviderProfile, type ProviderProfileInput, type PushSubscription, type RatingSummary, type Review, type ReviewInput, type SearchInput, type SearchKind, type SearchResults, type SearchSort, type UserAccount } from './db.js'
 import { vapidPublicKey, type PushSubscriptionInput } from './push.js'
 import { getUnreadNotificationCount, listNotifications, markAllNotificationsRead, markNotificationRead, type NotificationView } from './notifications.js'
 import { type ApplicationRole } from './roles.js'
@@ -11,6 +12,7 @@ import { adminDashboard, auditLog, createCategory, deleteCategory, getSettings, 
 export interface AccountStore {
   findOrCreateUser(identity: AuthenticatedIdentity): Promise<UserAccount>
   updateUserAccount(id: string, changes: { displayName?: string | null; preferredLocale?: PreferredLocale }): Promise<UserAccount>
+  anonymizeUserAccount?(id: string): Promise<UserAccount>
 }
 
 export interface ProviderStore {
@@ -44,7 +46,7 @@ export interface OfferStore {
 }
 
 export interface MessagingStore {
-  getConversations(userId: string): Promise<Conversation[]>
+  getConversations(userId: string, limit?: number, offset?: number): Promise<Conversation[]>
   getConversation(id: string, userId: string): Promise<Conversation | null>
   createConversation(userId: string, input: ConversationInput): Promise<Conversation>
   sendMessage(conversationId: string, userId: string, content: string): Promise<Message>
@@ -84,6 +86,7 @@ export interface ApiDependencies {
   aiRateKey?: (request: IncomingMessage) => string
   aiProvider?: { complete(messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>, tools?: AiToolDefinition[], model?: string): Promise<AiModelResponse> }
   admin?: AdminStore
+  health?: () => Promise<{ database: boolean; eventWorker: boolean }>
 }
 
 export interface AdminStore {
@@ -107,7 +110,7 @@ export interface AdminStore {
 
 interface AdminListQuery { search: string; status: string | null; page: number; pageSize: number }
 
-const defaultAccounts: AccountStore = { findOrCreateUser, updateUserAccount }
+const defaultAccounts: AccountStore = { findOrCreateUser, updateUserAccount, anonymizeUserAccount }
 const defaultProviders: ProviderStore = { getProviderProfile, saveProviderProfile, setProviderServices, getPublicProvider, getPublicProviders }
 const defaultJobs: JobStore = { getJobs, getAssignedJobs, getJob, createJob, updateJob, transitionJob, startJob, finishJob, confirmJob }
 const defaultOffers: OfferStore = { getOpenJobs: getOpenJobsForProvider, getJobOffers: getOffersForJob, getProviderOffers: getOffersForProvider, createOffer, updateOffer, withdrawOffer, transitionOffer }
@@ -121,8 +124,69 @@ const searchSorts = new Set<SearchSort>(['relevance', 'newest', 'price'])
 const availabilityStatuses = new Set<AvailabilityStatus>(['AVAILABLE', 'BUSY', 'UNAVAILABLE'])
 
 function sendJson(response: ServerResponse, status: number, body: unknown) {
-  response.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
-  response.end(JSON.stringify(body))
+  response.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+    'x-frame-options': 'DENY',
+    'referrer-policy': 'no-referrer',
+    'content-security-policy': "default-src 'none'; frame-ancestors 'none'",
+    ...(response.getHeader('x-request-id') ? {} : { 'x-request-id': randomUUID() }),
+  })
+  response.end(status === 204 ? undefined : JSON.stringify(body))
+}
+
+const writeRateLimit = new Map<string, { startedAt: number; count: number }>()
+const writeRateWindowMs = 60_000
+const writeRateLimitCount = 120
+const apiMetrics = { requests: 0, errors: 0, rateLimited: 0 }
+
+function requestAddress(request: IncomingMessage) {
+  return request.socket.remoteAddress ?? 'unknown'
+}
+
+function allowWrite(request: IncomingMessage) {
+  const now = Date.now()
+  const key = `${requestAddress(request)}:${request.url?.split('?')[0] ?? '/'}`
+  const bucket = writeRateLimit.get(key)
+  if (!bucket || now - bucket.startedAt >= writeRateWindowMs) {
+    writeRateLimit.set(key, { startedAt: now, count: 1 })
+    return true
+  }
+  if (bucket.count >= writeRateLimitCount) return false
+  bucket.count += 1
+  return true
+}
+
+function securityHeaders(response: ServerResponse, requestId: string) {
+  response.setHeader('x-request-id', requestId)
+  response.setHeader('x-content-type-options', 'nosniff')
+  response.setHeader('x-frame-options', 'DENY')
+  response.setHeader('referrer-policy', 'no-referrer')
+  response.setHeader('content-security-policy', "default-src 'none'; frame-ancestors 'none'")
+}
+
+function isMarketplacePath(pathname: string) {
+  return (pathname.startsWith('/api/v1/jobs') && !pathname.startsWith('/api/v1/jobs/public/')) || pathname.startsWith('/api/v1/provider/jobs') || pathname.startsWith('/api/v1/provider/offers') || pathname.startsWith('/api/v1/offers')
+}
+
+async function proxyMarketplace(request: IncomingMessage, response: ServerResponse, url: URL, requestId: string) {
+  const base = process.env.MARKETPLACE_SERVICE_URL?.trim().replace(/\/$/, '')
+  if (!base) return false
+  try {
+    const headers: Record<string, string> = { 'x-request-id': requestId }
+    for (const name of ['authorization', 'content-type', 'accept']) { const value = request.headers[name]; if (typeof value === 'string') headers[name] = value }
+    let body: Buffer | undefined
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      const chunks: Buffer[] = []; let size = 0
+      for await (const chunk of request) { const part = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk); size += part.length; if (size > 32_000) { sendJson(response, 400, { error: 'Request body too large', requestId }); return true } chunks.push(part) }
+      body = Buffer.concat(chunks)
+    }
+    const upstream = await fetch(`${base}${url.pathname}${url.search}`, { method: request.method, headers, body: body as BodyInit | undefined })
+    response.writeHead(upstream.status, { 'content-type': upstream.headers.get('content-type') ?? 'application/json; charset=utf-8', 'x-request-id': upstream.headers.get('x-request-id') ?? requestId })
+    response.end(Buffer.from(await upstream.arrayBuffer()))
+  } catch { sendJson(response, 502, { error: 'Marketplace service unavailable', requestId }) }
+  return true
 }
 
 function searchInput(url: URL): SearchInput | null {
@@ -601,8 +665,33 @@ async function aiReply(message: string, locale: PreferredLocale, dependencies: A
 export function createApiHandler(dependencies: ApiDependencies) {
   const subscribers = new Map<string, Set<ServerResponse>>()
   return async function handle(request: IncomingMessage, response: ServerResponse) {
+    const requestId = typeof request.headers['x-request-id'] === 'string' && /^[A-Za-z0-9._-]{1,100}$/.test(request.headers['x-request-id']) ? request.headers['x-request-id'] : randomUUID()
+    securityHeaders(response, requestId)
+    apiMetrics.requests += 1
     const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`)
     try {
+      if (request.method === 'GET' && url.pathname === '/health/live') {
+        sendJson(response, 200, { data: { status: 'ok', requestId } }); return
+      }
+      if (request.method === 'GET' && url.pathname === '/health/metrics') {
+        sendJson(response, 200, { data: { ...apiMetrics, uptimeSeconds: Math.floor(process.uptime()), requestId } }); return
+      }
+      if (request.method === 'GET' && url.pathname === '/health/ready') {
+        try {
+          const health = dependencies.health ? await dependencies.health() : { database: true, eventWorker: true }
+          const ready = health.database && health.eventWorker
+          sendJson(response, ready ? 200 : 503, { data: { status: ready ? 'ready' : 'not_ready', ...health, requestId } })
+        } catch {
+          sendJson(response, 503, { error: 'Service not ready', requestId })
+        }
+        return
+      }
+      if (url.pathname.startsWith('/api/v1/') && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method ?? '') && !allowWrite(request)) {
+        apiMetrics.rateLimited += 1
+        response.setHeader('retry-after', '60')
+        sendJson(response, 429, { error: 'Too many write requests', requestId }); return
+      }
+      if (isMarketplacePath(url.pathname) && await proxyMarketplace(request, response, url, requestId)) return
       if (request.method === 'GET' && url.pathname === '/api/v1/search') {
         const input = searchInput(url)
         if (!input) { sendJson(response, 400, { error: 'Invalid search query' }); return }
@@ -617,7 +706,7 @@ export function createApiHandler(dependencies: ApiDependencies) {
       if (request.method === 'GET' && url.pathname === '/api/v1/inbox/events') {
         const authenticated = await requireInboxUser(request, response, dependencies)
         if (!authenticated) return
-        response.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', connection: 'keep-alive' })
+        response.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', connection: 'keep-alive', 'x-request-id': requestId, 'x-content-type-options': 'nosniff' })
         response.write(': connected\n\n')
         const listeners = subscribers.get(authenticated.account.id) ?? new Set<ServerResponse>()
         listeners.add(response); subscribers.set(authenticated.account.id, listeners)
@@ -627,7 +716,10 @@ export function createApiHandler(dependencies: ApiDependencies) {
       if (request.method === 'GET' && url.pathname === '/api/v1/inbox') {
         const authenticated = await requireInboxUser(request, response, dependencies)
         if (!authenticated) return
-        sendJson(response, 200, { data: await messaging.getConversations(authenticated.account.id) }); return
+        const limitValue = Number(url.searchParams.get('limit') ?? '50'); const offsetValue = Number(url.searchParams.get('offset') ?? '0')
+        const limit = Number.isInteger(limitValue) ? Math.max(1, Math.min(100, limitValue)) : 50
+        const offset = Number.isInteger(offsetValue) ? Math.max(0, Math.min(10_000, offsetValue)) : 0
+        sendJson(response, 200, { data: await messaging.getConversations(authenticated.account.id, limit, offset) }); return
       }
       if (request.method === 'GET' && url.pathname === '/api/v1/inbox/unread') {
         const authenticated = await requireInboxUser(request, response, dependencies)
@@ -703,7 +795,7 @@ export function createApiHandler(dependencies: ApiDependencies) {
         const authenticated = await requireInboxUser(request, response, dependencies)
         if (!authenticated) return
         const body = await readBody(request); const keys = body.keys
-        if (typeof body.endpoint !== 'string' || !body.endpoint.startsWith('https://') || !keys || typeof keys !== 'object' || Array.isArray(keys) || typeof (keys as Record<string, unknown>).p256dh !== 'string' || typeof (keys as Record<string, unknown>).auth !== 'string') { sendJson(response, 400, { error: 'Invalid push subscription' }); return }
+        if (typeof body.endpoint !== 'string' || body.endpoint.length > 2048 || !body.endpoint.startsWith('https://') || !keys || typeof keys !== 'object' || Array.isArray(keys) || typeof (keys as Record<string, unknown>).p256dh !== 'string' || typeof (keys as Record<string, unknown>).auth !== 'string' || (keys as Record<string, string>).p256dh.length > 512 || (keys as Record<string, string>).auth.length > 512) { sendJson(response, 400, { error: 'Invalid push subscription' }); return }
         await messaging.savePushSubscription(authenticated.account.id, { endpoint: body.endpoint, keys: { p256dh: (keys as Record<string, string>).p256dh, auth: (keys as Record<string, string>).auth } }); sendJson(response, 204, null); return
       }
       if (request.method === 'GET' && url.pathname === '/api/v1/inbox/push-public-key') { sendJson(response, 200, { data: { publicKey: vapidPublicKey() } }); return }
@@ -762,6 +854,14 @@ export function createApiHandler(dependencies: ApiDependencies) {
           preferredLocale: body.preferredLocale as PreferredLocale | undefined,
         })
         sendJson(response, 200, { data: accountResponse(account, authenticated.identity) })
+        return
+      }
+      if (url.pathname === '/api/v1/me' && request.method === 'DELETE') {
+        const authenticated = await requireAccount(request, response, dependencies)
+        if (!authenticated) return
+        if (!(dependencies.accounts ?? defaultAccounts).anonymizeUserAccount) { sendJson(response, 501, { error: 'Account deletion is unavailable', requestId }); return }
+        await (dependencies.accounts ?? defaultAccounts).anonymizeUserAccount!(authenticated.account.id)
+        sendJson(response, 204, null)
         return
       }
       if (request.method === 'GET' && url.pathname === '/api/v1/authz/customer') return roleRoute(request, response, dependencies, 'CUSTOMER')
@@ -1068,7 +1168,10 @@ export function createApiHandler(dependencies: ApiDependencies) {
       sendJson(response, 404, { error: 'Not found' })
     } catch (error) {
       const message = error instanceof Error ? error.message : ''
-      sendJson(response, message === 'Invalid JSON' || message === 'Request body too large' ? 400 : 500, { error: message === 'Invalid JSON' || message === 'Request body too large' ? message : 'Internal server error' })
+      const clientError = message === 'Invalid JSON' || message === 'Request body too large'
+      apiMetrics.errors += 1
+      console.error(JSON.stringify({ level: 'error', requestId, method: request.method, path: url.pathname, error: clientError ? message : 'internal_error' }))
+      sendJson(response, clientError ? 400 : 500, { error: clientError ? message : 'Internal server error', requestId })
     }
   }
 }

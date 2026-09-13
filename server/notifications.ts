@@ -81,9 +81,9 @@ export async function consumeDomainEvent(event: DomainEvent, push: (subscription
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
-    const consumed = await client.query(`INSERT INTO event_consumptions (consumer_name, event_id) VALUES ($1, $2)
-      ON CONFLICT (consumer_name, event_id) DO NOTHING RETURNING event_id`, [consumerName, event.eventId])
-    if (!consumed.rows.length) { await client.query('COMMIT'); return }
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))', [consumerName, event.eventId])
+    const consumed = await client.query('SELECT event_id FROM event_consumptions WHERE consumer_name = $1 AND event_id = $2', [consumerName, event.eventId])
+    if (consumed.rows.length) { await client.query('COMMIT'); return }
     if (recipients.length) {
       await client.query(`INSERT INTO notifications (user_id, event_id, event_type, title, body)
         SELECT recipient, $1, $2, $3::jsonb, $4::jsonb FROM unnest($5::uuid[]) AS recipient
@@ -97,9 +97,12 @@ export async function consumeDomainEvent(event: DomainEvent, push: (subscription
 
   if (event.eventType === 'message.created' && recipients.length) {
     const subscriptions = await pool.query<{ endpoint: string; p256dh: string; auth: string }>(`SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ANY($1::uuid[])`, [recipients])
-    const body = typeof payload.messagePreview === 'string' ? payload.messagePreview : text.body.en
-    for (const subscription of subscriptions.rows) await push({ endpoint: subscription.endpoint, keys: { p256dh: subscription.p256dh, auth: subscription.auth } }, { title: text.title.en, body, conversationId: typeof payload.conversationId === 'string' ? payload.conversationId : event.aggregateId })
+    for (const subscription of subscriptions.rows) {
+      const delivered = await push({ endpoint: subscription.endpoint, keys: { p256dh: subscription.p256dh, auth: subscription.auth } }, { title: text.title.en, body: text.body.en, conversationId: typeof payload.conversationId === 'string' ? payload.conversationId : event.aggregateId })
+      if (!delivered) continue
+    }
   }
+  await pool.query(`INSERT INTO event_consumptions (consumer_name, event_id) VALUES ($1, $2) ON CONFLICT (consumer_name, event_id) DO NOTHING`, [consumerName, event.eventId])
 }
 
 export async function listNotifications(userId: string, locale: PreferredLocale, limit = 50): Promise<NotificationView[]> {

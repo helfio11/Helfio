@@ -60,6 +60,28 @@ For GitHub Codespaces, set the browser-facing public URLs before starting the se
 
 Required environment variables are listed in `.env.example`. `GET /api/v1/me` returns the local account and validated application roles. `PATCH /api/v1/me` accepts only `displayName` and `preferredLocale` (`en`, `de`, `sq`, or `tr`). Account credentials remain in Keycloak; Helfio PostgreSQL owns only application profile and account state (`ACTIVE`, `SUSPENDED`, or `DISABLED`). Future Java/Spring Boot services should use the same issuer, JWKS, audience, and realm roles rather than duplicating this user/auth domain.
 
+### PostgreSQL backup and restore verification
+
+Use a custom-format dump and never restore over the live database. The repository provides an isolated check that creates a temporary database on the same PostgreSQL server, restores the dump, verifies core records, and removes the temporary database:
+
+```sh
+export DATABASE_URL=postgresql://helfio:change-me-development-only@localhost:5432/helfio
+./scripts/verify-postgres-backup.sh
+```
+
+When PostgreSQL client binaries are not installed in the workspace, the equivalent Codespaces check is:
+
+```sh
+docker exec helfio-helfio-db-1 pg_dump -U helfio -Fc helfio > /tmp/helfio.dump
+docker exec helfio-helfio-db-1 createdb -U helfio helfio_restore_check
+docker cp /tmp/helfio.dump helfio-helfio-db-1:/tmp/helfio.dump
+docker exec helfio-helfio-db-1 pg_restore -U helfio --exit-on-error --no-owner -d helfio_restore_check /tmp/helfio.dump
+docker exec helfio-helfio-db-1 psql -U helfio -d helfio_restore_check -c 'SELECT count(*) FROM users;'
+docker exec helfio-helfio-db-1 dropdb -U helfio helfio_restore_check
+```
+
+For an operator backup without the verification cleanup, use `pg_dump --format=custom --file=helfio-$(date +%F).dump "$DATABASE_URL"`. Restore only into a new isolated database with `createdb`, apply all migrations in order before loading application data when required by the target environment, and use `pg_restore --exit-on-error --no-owner --dbname="$TARGET_DATABASE_URL" path/to/dump`. PostgreSQL and Keycloak Compose volumes are persistent; backup/restore commands do not reset them.
+
 ## Phase 5 Provider Profiles
 
 Provider profiles are stored in `provider_profiles` and linked to dynamic PostgreSQL categories through `provider_services`. No service names are duplicated in the frontend. Only authenticated users with the validated `PROVIDER` role can manage their own profile; customer and unauthenticated requests receive `403` and `401` respectively. Profile visibility controls public exposure, and public responses omit private contact fields while returning a rating placeholder until the Reviews phase.
