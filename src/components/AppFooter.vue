@@ -21,23 +21,23 @@ const { t } = useI18n()
 
       <div class="footer-links">
         <h4>{{ t('footer.company') }}</h4>
-        <a href="#">{{ t('footer.about') }}</a>
-        <a href="#">{{ t('footer.careers') }}</a>
-        <a href="#">{{ t('footer.partners') }}</a>
+        <a href="/#about">{{ t('footer.about') }}</a>
+        <a href="/search?kind=providers">{{ t('footer.careers') }}</a>
+        <a href="/search?kind=providers">{{ t('footer.partners') }}</a>
       </div>
 
       <div class="footer-links">
         <h4>{{ t('footer.service') }}</h4>
-        <a href="#">{{ t('footer.customerService') }}</a>
-        <a href="#">{{ t('footer.help') }}</a>
-        <a href="#">{{ t('footer.reviews') }}</a>
+        <a href="/search">{{ t('footer.customerService') }}</a>
+        <a href="/search">{{ t('footer.help') }}</a>
+        <a href="/search?sort=newest">{{ t('footer.reviews') }}</a>
       </div>
 
       <div class="footer-links">
         <h4>{{ t('footer.legal') }}</h4>
-        <a href="#">{{ t('footer.terms') }}</a>
-        <a href="#">{{ t('footer.privacy') }}</a>
-        <a href="#">{{ t('footer.imprint') }}</a>
+        <a href="/search">{{ t('footer.terms') }}</a>
+        <a href="/search">{{ t('footer.privacy') }}</a>
+        <a href="/search">{{ t('footer.imprint') }}</a>
       </div>
     </div>
 

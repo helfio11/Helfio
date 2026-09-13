@@ -87,3 +87,9 @@ Migration `005_create_offers.sql` adds provider offers and 24-hour authenticated
 Offer APIs are available at `/api/v1/provider/jobs`, `/api/v1/provider/jobs/:id`, `/api/v1/provider/offers`, `/api/v1/jobs/:id/offers`, `/api/v1/offers/:id`, `/api/v1/offers/:id/withdraw`, `/api/v1/offers/:id/accept`, and `/api/v1/offers/:id/reject`. Provider and customer ownership is enforced server-side.
 
 The global Helfio Assistant uses `POST /api/v1/ai/chat` and authenticated `GET /api/v1/ai/conversation`. OpenAI is server-only through `OPENAI_API_KEY` and optional `OPENAI_MODEL`; the Vue application never receives the key. The assistant receives bounded, authorized Helfio context, refuses off-topic or secret/system-prompt requests, times out safely, and stores authenticated history for 24 hours. Guests retain temporary browser history only. Missing OpenAI configuration returns a safe `503` while the rest of Helfio remains available.
+
+## Phase 8 Inbox / Messaging
+
+Migration `006_create_messaging.sql` adds customer/provider conversations, messages with per-recipient read state, and Web Push subscriptions. A conversation is created from a customer-owned job and a matching pending or accepted provider offer. Every inbox, message, and read operation is authorized against the authenticated local account; the browser role checks are only presentation logic.
+
+The API exposes `GET /api/v1/inbox`, `GET /api/v1/inbox/unread`, `POST /api/v1/inbox/conversations`, conversation read/send routes, an authenticated SSE stream at `/api/v1/inbox/events`, and push-subscription routes. Messages are delivered to connected members over SSE and optionally sent through Web Push. Generate local VAPID keys with `npm run vapid:generate`; this creates ignored `.env.local` with mode `600`. Load those variables into the backend environment before starting `npm run dev:api`. Keep `VAPID_PRIVATE_KEY` backend-only; only `VAPID_PUBLIC_KEY` is returned to authenticated inbox clients.

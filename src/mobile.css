@@ -1,0 +1,79 @@
+.menu-toggle{display:none}
+@media (max-width:650px){
+  html,body,#app,.page-shell{max-width:100%;min-width:0}
+  .container{width:calc(100% - 32px);max-width:none}
+  .topbar{height:auto}
+  .topbar-inner{position:relative;display:flex;flex-wrap:wrap;gap:0;padding:10px 0;min-height:62px}
+  .brand{min-width:0;max-width:calc(100% - 52px)}
+  .brand strong{font-size:21px}
+  .brand small{font-size:7px;white-space:nowrap}
+  .menu-toggle{display:flex;flex:0 0 40px;width:40px;height:40px;margin-left:auto;padding:9px 8px;border:1px solid var(--line);border-radius:6px;background:#fff;flex-direction:column;justify-content:center;gap:4px}
+  .menu-toggle span{display:block;width:100%;height:2px;background:var(--ink);border-radius:2px}
+  .topbar nav{display:none;order:3;width:100%;padding:12px 0 2px;gap:0;flex-direction:column;align-items:stretch;overflow:visible}
+  .topbar nav.open{display:flex}
+  .topbar nav a{padding:10px 2px;border-top:1px solid var(--line);font-size:12px}
+  .header-actions{display:none}
+  .hero-section{height:auto;min-height:0;overflow:visible}
+  .hero-inner{display:block;padding-top:32px;padding-bottom:30px}
+  .hero-copy{width:auto;min-width:0}
+  .hero-copy h1{font-size:clamp(31px,9vw,38px);line-height:1.08;letter-spacing:-.045em;margin:16px 0 10px;max-width:100%;overflow-wrap:anywhere}
+  .hero-copy>p{max-width:32ch}
+  .search-box{width:100%;height:auto;min-width:0;padding:8px;margin-top:20px;display:flex;flex-direction:column;align-items:stretch;gap:0}
+  .search-field,.search-field.location{width:100%;min-width:0;min-height:52px;flex:none;padding:8px 10px}
+  .search-field>div{min-width:0}
+  .search-field strong,.search-field small{overflow-wrap:anywhere}
+  .search-separator{width:100%;height:1px;flex:none}
+  .search-submit{width:100%;min-width:0;height:48px;margin:5px 0 0;flex:none}
+  .popular{width:100%;align-items:flex-start;flex-wrap:wrap;gap:6px}
+  .popular span{width:100%;flex:0 0 100%}
+  .popular button{max-width:100%;white-space:normal;overflow-wrap:anywhere}
+  .hero-aside{width:100%;margin-top:26px;display:block}
+  .benefit-card,.review-card{width:100%;min-width:0}
+  .review-card{margin-top:12px}
+  .content-section,.providers-section{padding-top:34px}
+  .section-heading,.section-heading>div{min-width:0}
+  .section-heading h2{font-size:22px;line-height:1.15;overflow-wrap:anywhere}
+  .category-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  .category-card{min-width:0;min-height:118px;padding:12px 8px;grid-template-columns:1fr;text-align:center;overflow:hidden}
+  .category-card>div{min-width:0}
+  .category-card h3,.category-card p{overflow-wrap:anywhere}
+  .provider-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  .provider-card{min-width:0}
+  .provider-body,.provider-name-row,.provider-name-row>div{min-width:0}
+  .provider-name-row h3,.provider-rating span{overflow-wrap:anywhere}
+  .provider-tags{min-width:0;max-width:100%;flex-wrap:wrap}
+  .provider-tags span{max-width:100%;white-space:normal;overflow-wrap:anywhere}
+  .steps-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:24px 8px}
+  .step{min-width:0;padding:0 8px;border-right:0}
+  .step p,.step strong,.step h3{overflow-wrap:anywhere}
+  .cta-section{width:calc(100% - 32px);min-width:0}
+  .provider-profile-panel,.customer-jobs-panel,.offers-panel{width:calc(100% - 32px);min-width:0;padding:22px 16px}
+  .customer-jobs-layout,.offers-layout{grid-template-columns:minmax(0,1fr);min-width:0}
+  .job-form,.offer-form,.offer-list{min-width:0}
+  .job-fields,.provider-profile-fields{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .offer-row,.offer-card{min-width:0;flex-wrap:wrap;align-items:flex-start}
+  .offer-row>span,.offer-card>div{min-width:0;max-width:100%;overflow-wrap:anywhere}
+  .offer-actions{justify-content:flex-start}
+  .assistant-widget{right:12px;bottom:12px}
+  .assistant-window{width:calc(100vw - 24px);max-width:400px;height:min(70dvh,520px);max-height:70dvh;border-radius:10px}
+  .assistant-messages{min-height:0;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
+  .assistant-form{flex:0 0 auto;padding-bottom:max(10px,env(safe-area-inset-bottom))}
+  .assistant-form input{min-width:0;width:100%}
+}
+@media (max-width:359px){
+  .container{width:calc(100% - 24px)}
+  .category-card{min-height:126px;padding-inline:6px}
+  .provider-grid{grid-template-columns:1fr}
+  .provider-card{display:grid;grid-template-columns:92px minmax(0,1fr)}
+  .provider-photo{height:100%;min-height:112px}
+  .provider-body{padding:10px}
+  .provider-footer button{padding:7px}
+  .provider-profile-panel,.customer-jobs-panel,.offers-panel,.cta-section{width:calc(100% - 24px)}
+  .assistant-widget{right:8px;bottom:8px}
+  .assistant-window{width:calc(100vw - 16px)}
+}
+
+.inbox-panel{margin-top:32px;margin-bottom:40px;padding:28px 32px;border:1px solid var(--line);border-radius:8px;background:#fff}.inbox-layout{display:grid;grid-template-columns:260px 1fr;gap:24px}.inbox-list{display:grid;align-content:start;gap:8px}.inbox-list-item{position:relative;display:grid;gap:5px;text-align:left;border:1px solid var(--line);border-radius:5px;background:#fbfcfa;padding:12px;color:var(--ink)}.inbox-list-item.selected{border-color:var(--green);box-shadow:inset 3px 0 var(--green)}.inbox-list-item strong{font-size:12px}.inbox-list-item span{font-size:10px;color:var(--muted)}.inbox-list-item b{position:absolute;right:10px;top:10px;min-width:18px;padding:3px 5px;border-radius:10px;background:var(--green);color:#fff;text-align:center;font-size:9px}.inbox-conversation{display:grid;gap:12px;min-width:0}.inbox-context{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid var(--line);padding-bottom:12px}.inbox-context strong{font-size:14px}.inbox-context span{color:var(--muted);font-size:10px}.inbox-messages{display:grid;gap:8px;min-height:150px;max-height:340px;overflow:auto}.inbox-message{max-width:80%;padding:9px 12px;border-radius:6px;background:#f1f7ef}.inbox-message p{margin:0;font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere}.inbox-message small{display:block;margin-top:5px;color:var(--muted);font-size:9px}.inbox-form{display:flex;gap:8px}.inbox-form input{min-width:0;flex:1;border:1px solid var(--line);border-radius:5px;padding:10px 11px;font-size:12px}.inbox-error{color:#a34e48}.inbox-link{display:flex;align-items:center;gap:5px;color:var(--green);font-size:11px;font-weight:700}.inbox-link b{min-width:17px;padding:3px 4px;border-radius:9px;background:#dff0a8;color:#356d40;text-align:center;font-size:9px}
+.search-page{margin-top:32px;margin-bottom:40px;padding:28px 32px;border:1px solid var(--line);border-radius:8px;background:#fff}.search-filters{display:grid;grid-template-columns:2fr 1.2fr 1fr 1fr;gap:8px;margin-bottom:28px}.search-filters input,.search-filters select{min-width:0;border:1px solid var(--line);border-radius:5px;padding:10px;font-size:11px;background:#fff;color:var(--ink)}.search-filters button{grid-column:span 1}.search-result-section{margin-top:24px}.search-result-section>h3{font-family:Manrope,sans-serif;font-size:17px;margin:0 0 12px}.search-result-section .provider-card{display:block;color:var(--ink)}.search-pagination{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:24px}.provider-detail,.job-detail{margin-top:32px;min-height:320px}.provider-detail-content,.job-detail-content{padding:28px 32px;border:1px solid var(--line);border-radius:8px;background:#fff}.provider-detail-content h2,.job-detail-content h2{font-family:Manrope,sans-serif;font-size:28px;margin:8px 0}.provider-detail-content p,.job-detail-content p{max-width:70ch;color:var(--muted);line-height:1.6;font-size:12px}.job-detail-content .header-cta{display:inline-block;margin-top:12px}
+@media (max-width:650px){.inbox-panel{width:calc(100% - 32px);padding:22px 16px}.inbox-layout{grid-template-columns:1fr}.inbox-context{display:grid}.inbox-message{max-width:92%}}
+@media (max-width:650px){.search-page{width:calc(100% - 32px);padding:22px 16px}.search-filters{grid-template-columns:1fr 1fr}.search-filters input:first-child{grid-column:span 2}.search-filters button{grid-column:span 2}.provider-detail,.job-detail{width:calc(100% - 32px)}.provider-detail-content,.job-detail-content{padding:22px 16px}}

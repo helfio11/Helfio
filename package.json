@@ -7,6 +7,7 @@
     "dev": "vite",
     "dev:api": "tsx server/index.ts",
     "keycloak:configure-dev": "sh scripts/configure-keycloak-dev.sh",
+    "vapid:generate": "node scripts/generate-vapid-keys.mjs",
     "db:migrate": "set -e; for migration in db/migrations/*.sql; do psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f \"$migration\"; done",
     "db:seed": "psql \"$DATABASE_URL\" -f db/seed.sql",
     "build": "vue-tsc -b && vite build",
@@ -19,11 +20,13 @@
     "keycloak-js": "^26.2.4",
     "pg": "^8.16.3",
     "vue": "^3.5.42",
-    "vue-i18n": "^11.4.10"
+    "vue-i18n": "^11.4.10",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
     "@types/pg": "^8.15.5",
+    "@types/web-push": "^3.6.4",
     "@vitejs/plugin-vue": "^6.0.8",
     "@vue/tsconfig": "^0.9.1",
     "tsx": "^4.20.6",

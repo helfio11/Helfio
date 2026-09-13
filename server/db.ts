@@ -192,6 +192,57 @@ export async function getPublicProvider(userId: string): Promise<ProviderProfile
   return result.rows[0] ? mapProvider(result.rows[0], await providerServices(userId)) : null
 }
 
+export type SearchKind = 'all' | 'providers' | 'jobs' | 'categories'
+export type SearchSort = 'relevance' | 'newest' | 'price'
+export interface SearchInput { kind: SearchKind; query: string; category: string | null; city: string | null; availability: AvailabilityStatus | null; minPrice: number | null; maxPrice: number | null; sort: SearchSort; page: number; pageSize: number }
+export interface SearchPage<T> { items: T[]; page: number; pageSize: number; total: number; hasNext: boolean }
+export interface SearchResults { providers: SearchPage<PublicProviderProfile>; jobs: SearchPage<Job>; categories: SearchPage<CategoryRow> }
+
+function pageOf<T>(items: T[], page: number, pageSize: number): SearchPage<T> {
+  const start = (page - 1) * pageSize
+  return { items: items.slice(start, start + pageSize), page, pageSize, total: items.length, hasNext: start + pageSize < items.length }
+}
+
+function searchTerm(input: SearchInput) { return input.query ? `%${input.query.replace(/[\\%_]/g, (value) => `\\${value}`)}%` : null }
+
+export async function searchMarketplace(input: SearchInput): Promise<SearchResults> {
+  const term = searchTerm(input)
+  const providers: PublicProviderProfile[] = []
+  if (input.kind === 'all' || input.kind === 'providers') {
+    const values: unknown[] = []; const filters = ["p.visibility = 'PUBLIC'"]
+    if (term) { values.push(term); filters.push(`(p.display_name ILIKE $${values.length} OR p.description ILIKE $${values.length} OR p.city ILIKE $${values.length})`) }
+    if (input.city) { values.push(`%${input.city}%`); filters.push(`p.city ILIKE $${values.length}`) }
+    if (input.category) { values.push(input.category); filters.push(`EXISTS (SELECT 1 FROM provider_services ps JOIN categories pc ON pc.id = ps.category_id WHERE ps.provider_user_id = p.user_id AND (pc.id::text = $${values.length} OR pc.slug = $${values.length}))`) }
+    if (input.availability) { values.push(input.availability); filters.push(`p.availability_status = $${values.length}`) }
+    if (input.minPrice !== null) { values.push(input.minPrice); filters.push(`p.starting_price >= $${values.length}`) }
+    if (input.maxPrice !== null) { values.push(input.maxPrice); filters.push(`p.starting_price IS NULL OR p.starting_price <= $${values.length}`) }
+    const order = input.sort === 'price' ? 'p.starting_price NULLS LAST, p.updated_at DESC' : 'p.updated_at DESC'
+    const result = await pool.query(`${providerSelect} p WHERE ${filters.join(' AND ')} ORDER BY ${order}`, values)
+    for (const row of result.rows) providers.push(publicProvider(mapProvider(row, await providerServices(String(row.userId))))!)
+  }
+  const jobs: Job[] = []
+  if (input.kind === 'all' || input.kind === 'jobs') {
+    const values: unknown[] = [input.query ? term : null]; const filters = ["j.status = 'OPEN'"]
+    if (term) filters.push(`(j.title ILIKE $1 OR j.description ILIKE $1 OR j.city ILIKE $1 OR c.slug ILIKE $1)`)
+    else values.length = 0
+    if (input.city) { values.push(`%${input.city}%`); filters.push(`j.city ILIKE $${values.length}`) }
+    if (input.category) { values.push(input.category); filters.push(`(j.category_id::text = $${values.length} OR c.slug = $${values.length})`) }
+    if (input.minPrice !== null) { values.push(input.minPrice); filters.push(`COALESCE(j.budget_max, j.budget_min, 0) >= $${values.length}`) }
+    if (input.maxPrice !== null) { values.push(input.maxPrice); filters.push(`COALESCE(j.budget_min, j.budget_max, 0) <= $${values.length}`) }
+    const order = input.sort === 'price' ? 'COALESCE(j.budget_min, j.budget_max) NULLS LAST, j.updated_at DESC' : 'j.updated_at DESC'
+    const result = await pool.query(`${jobSelect} WHERE ${filters.join(' AND ')} ORDER BY ${order}`, values)
+    jobs.push(...await Promise.all(result.rows.map(mapJob)))
+  }
+  const categories: CategoryRow[] = []
+  if (input.kind === 'all' || input.kind === 'categories') {
+    const escapedCategory = input.category?.replace(/'/g, "''")
+    const categoryFilter = escapedCategory ? ` AND (c.id::text = '${escapedCategory}' OR c.slug = '${escapedCategory}')` : ''
+    const filter = term ? `WHERE c.status = 'active'${categoryFilter} AND (c.slug ILIKE '${term.replace(/'/g, "''")}' OR EXISTS (SELECT 1 FROM category_translations ct WHERE ct.category_id = c.id AND (ct.name ILIKE '${term.replace(/'/g, "''")}' OR ct.description ILIKE '${term.replace(/'/g, "''")}')))` : `WHERE c.status = 'active'${categoryFilter}`
+    categories.push(...await getCategories(filter))
+  }
+  return { providers: pageOf(providers, input.page, input.pageSize), jobs: pageOf(jobs, input.page, input.pageSize), categories: pageOf(categories, input.page, input.pageSize) }
+}
+
 export type JobStatus = 'DRAFT' | 'OPEN' | 'ASSIGNED' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED'
 export type BudgetType = 'FIXED' | 'RANGE' | 'NEGOTIABLE'
 
@@ -311,9 +362,34 @@ export async function transitionJob(id: string, customerUserId: string, from: Jo
 
 export type OfferStatus = 'PENDING' | 'ACCEPTED' | 'REJECTED' | 'WITHDRAWN'
 export interface OfferInput { price: number; currency: string; message: string; estimatedDuration?: string | null; availableFrom?: string | null }
-export interface Offer extends OfferInput { id: string; jobId: string; providerUserId: string; provider: ProviderProfile | null; status: OfferStatus; createdAt: string; updatedAt: string }
+export interface PublicProviderProfile {
+  userId: string
+  displayName: string
+  description: string
+  profileImageRef: string | null
+  city: string
+  postalCode: string
+  serviceRadiusKm: number
+  availabilityStatus: AvailabilityStatus
+  yearsExperience: number
+  startingPrice: number | null
+  currency: string
+  services: ProviderService[]
+}
+export interface Offer extends OfferInput { id: string; jobId: string; providerUserId: string; provider: PublicProviderProfile | null; status: OfferStatus; createdAt: string; updatedAt: string }
 
-function mapOffer(row: Record<string, unknown>, provider: ProviderProfile | null): Offer {
+function publicProvider(profile: ProviderProfile | null): PublicProviderProfile | null {
+  if (!profile) return null
+  return {
+    userId: profile.userId, displayName: profile.displayName, description: profile.description,
+    profileImageRef: profile.profileImageRef ?? null, city: profile.city, postalCode: profile.postalCode,
+    serviceRadiusKm: profile.serviceRadiusKm, availabilityStatus: profile.availabilityStatus,
+    yearsExperience: profile.yearsExperience, startingPrice: profile.startingPrice ?? null,
+    currency: profile.currency, services: profile.services,
+  }
+}
+
+function mapOffer(row: Record<string, unknown>, provider: PublicProviderProfile | null): Offer {
   return { id: String(row.id), jobId: String(row.jobId), providerUserId: String(row.providerUserId), price: Number(row.price), currency: String(row.currency), message: String(row.message), estimatedDuration: row.estimatedDuration ? String(row.estimatedDuration) : null, availableFrom: row.availableFrom ? String(row.availableFrom).slice(0, 10) : null, status: row.status as OfferStatus, createdAt: String(row.createdAt), updatedAt: String(row.updatedAt), provider }
 }
 
@@ -322,7 +398,7 @@ const offerSelect = `SELECT o.id, o.job_id AS "jobId", o.provider_user_id AS "pr
   o.status, o.created_at AS "createdAt", o.updated_at AS "updatedAt" FROM offers o`
 
 async function hydrateOffers(rows: Record<string, unknown>[]): Promise<Offer[]> {
-  return Promise.all(rows.map(async (row) => mapOffer(row, await getPublicProvider(String(row.providerUserId)))))
+  return Promise.all(rows.map(async (row) => mapOffer(row, publicProvider(await getPublicProvider(String(row.providerUserId))))))
 }
 
 export async function getOpenJobsForProvider(categoryId?: string, city?: string): Promise<Job[]> {
@@ -383,6 +459,8 @@ export async function transitionOffer(id: string, customerUserId: string, next: 
     const current = await client.query(`SELECT o.id, o.job_id FROM offers o JOIN jobs j ON j.id = o.job_id WHERE o.id = $1 AND j.customer_user_id = $2 FOR UPDATE`, [id, customerUserId])
     if (!current.rows[0]) throw new Error('Offer ownership required')
     if (next === 'ACCEPTED') {
+      const openJob = await client.query(`SELECT id FROM jobs WHERE id = $1 AND status = 'OPEN' FOR UPDATE`, [current.rows[0].job_id])
+      if (!openJob.rows[0]) throw new Error('Invalid offer transition')
       const updated = await client.query(`UPDATE offers SET status = 'ACCEPTED', updated_at = now() WHERE id = $1 AND status = 'PENDING' RETURNING id`, [id])
       if (!updated.rows[0]) throw new Error('Invalid offer transition')
       await client.query(`UPDATE offers SET status = 'REJECTED', updated_at = now() WHERE job_id = $1 AND id <> $2 AND status = 'PENDING'`, [current.rows[0].job_id, id])
@@ -416,4 +494,85 @@ export async function appendAiConversation(userId: string, userMessage: string, 
     await client.query('COMMIT')
     return { id, messages: [{ role: 'user', content: userMessage, createdAt: new Date().toISOString() }, { role: 'assistant', content: assistantMessage, createdAt: new Date().toISOString() }] }
   } catch (error) { await client.query('ROLLBACK'); throw error } finally { client.release() }
+}
+
+export interface Message { id: string; conversationId: string; senderUserId: string; content: string; readAt: string | null; createdAt: string }
+export interface Conversation { id: string; customerUserId: string; providerUserId: string; jobId: string; offerId: string | null; jobTitle: string; offerStatus: OfferStatus | null; updatedAt: string; messages: Message[]; unreadCount: number }
+export interface ConversationInput { jobId: string; offerId: string }
+export interface PushSubscription { endpoint: string; keys: { p256dh: string; auth: string } }
+
+function mapMessage(row: Record<string, unknown>): Message {
+  return { id: String(row.id), conversationId: String(row.conversationId), senderUserId: String(row.senderUserId), content: String(row.content), readAt: row.readAt ? String(row.readAt) : null, createdAt: String(row.createdAt) }
+}
+
+const conversationSelect = `SELECT c.id, c.customer_user_id AS "customerUserId", c.provider_user_id AS "providerUserId",
+  c.job_id AS "jobId", c.offer_id AS "offerId", j.title AS "jobTitle", o.status AS "offerStatus",
+  c.updated_at AS "updatedAt" FROM conversations c JOIN jobs j ON j.id = c.job_id LEFT JOIN offers o ON o.id = c.offer_id`
+
+async function hydrateConversation(row: Record<string, unknown>, userId: string): Promise<Conversation> {
+  const messages = await pool.query(`SELECT id, conversation_id AS "conversationId", sender_user_id AS "senderUserId", content,
+    read_at AS "readAt", created_at AS "createdAt" FROM messages WHERE conversation_id = $1 ORDER BY created_at`, [row.id])
+  const unread = await pool.query(`SELECT count(*)::int AS count FROM messages WHERE conversation_id = $1 AND sender_user_id <> $2 AND read_at IS NULL`, [row.id, userId])
+  return { id: String(row.id), customerUserId: String(row.customerUserId), providerUserId: String(row.providerUserId), jobId: String(row.jobId), offerId: row.offerId ? String(row.offerId) : null, jobTitle: String(row.jobTitle), offerStatus: row.offerStatus as OfferStatus | null, updatedAt: String(row.updatedAt), messages: messages.rows.map(mapMessage), unreadCount: Number(unread.rows[0].count) }
+}
+
+export async function getConversations(userId: string): Promise<Conversation[]> {
+  const result = await pool.query(`${conversationSelect} WHERE c.customer_user_id = $1 OR c.provider_user_id = $1 ORDER BY c.updated_at DESC`, [userId])
+  return Promise.all(result.rows.map((row) => hydrateConversation(row, userId)))
+}
+
+export async function getConversation(id: string, userId: string): Promise<Conversation | null> {
+  const result = await pool.query(`${conversationSelect} WHERE c.id = $1 AND (c.customer_user_id = $2 OR c.provider_user_id = $2)`, [id, userId])
+  return result.rows[0] ? hydrateConversation(result.rows[0], userId) : null
+}
+
+export async function createConversation(userId: string, input: ConversationInput): Promise<Conversation> {
+  const result = await pool.query(`INSERT INTO conversations (customer_user_id, provider_user_id, job_id, offer_id)
+    SELECT j.customer_user_id, o.provider_user_id, j.id, o.id FROM jobs j JOIN offers o ON o.job_id = j.id
+    WHERE j.id = $1 AND o.id = $2 AND j.customer_user_id = $3 AND o.status IN ('PENDING', 'ACCEPTED') AND o.provider_user_id <> $3
+    ON CONFLICT (job_id, provider_user_id) DO UPDATE SET offer_id = COALESCE(conversations.offer_id, EXCLUDED.offer_id), updated_at = now()
+    RETURNING id`, [input.jobId, input.offerId, userId])
+  if (!result.rows[0]) throw new Error('Invalid conversation context')
+  const conversation = await getConversation(String(result.rows[0].id), userId)
+  if (!conversation) throw new Error('Conversation access denied')
+  return conversation
+}
+
+export async function sendMessage(conversationId: string, userId: string, content: string): Promise<Message> {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const participant = await client.query(`SELECT id FROM conversations WHERE id = $1 AND (customer_user_id = $2 OR provider_user_id = $2) FOR UPDATE`, [conversationId, userId])
+    if (!participant.rows[0]) throw new Error('Conversation access denied')
+    const inserted = await client.query(`INSERT INTO messages (conversation_id, sender_user_id, content) VALUES ($1, $2, $3)
+      RETURNING id, conversation_id AS "conversationId", sender_user_id AS "senderUserId", content, read_at AS "readAt", created_at AS "createdAt"`, [conversationId, userId, content])
+    await client.query(`UPDATE conversations SET updated_at = now() WHERE id = $1`, [conversationId])
+    await client.query('COMMIT')
+    return mapMessage(inserted.rows[0])
+  } catch (error) { await client.query('ROLLBACK'); throw error } finally { client.release() }
+}
+
+export async function markConversationRead(conversationId: string, userId: string): Promise<number> {
+  const participant = await pool.query(`SELECT id FROM conversations WHERE id = $1 AND (customer_user_id = $2 OR provider_user_id = $2)`, [conversationId, userId])
+  if (!participant.rows[0]) throw new Error('Conversation access denied')
+  const result = await pool.query(`UPDATE messages m SET read_at = now() FROM conversations c
+    WHERE m.conversation_id = c.id AND c.id = $1 AND (c.customer_user_id = $2 OR c.provider_user_id = $2)
+    AND m.sender_user_id <> $2 AND m.read_at IS NULL`, [conversationId, userId])
+  return result.rowCount ?? 0
+}
+
+export async function getUnreadMessageCount(userId: string): Promise<number> {
+  const result = await pool.query(`SELECT count(*)::int AS count FROM messages m JOIN conversations c ON c.id = m.conversation_id
+    WHERE (c.customer_user_id = $1 OR c.provider_user_id = $1) AND m.sender_user_id <> $1 AND m.read_at IS NULL`, [userId])
+  return Number(result.rows[0].count)
+}
+
+export async function savePushSubscription(userId: string, subscription: PushSubscription): Promise<void> {
+  await pool.query(`INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth) VALUES ($1, $2, $3, $4)
+    ON CONFLICT (endpoint) DO UPDATE SET user_id = EXCLUDED.user_id, p256dh = EXCLUDED.p256dh, auth = EXCLUDED.auth, updated_at = now()`, [userId, subscription.endpoint, subscription.keys.p256dh, subscription.keys.auth])
+}
+
+export async function getPushSubscriptions(userId: string): Promise<PushSubscription[]> {
+  const result = await pool.query(`SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = $1`, [userId])
+  return result.rows.map((row) => ({ endpoint: String(row.endpoint), keys: { p256dh: String(row.p256dh), auth: String(row.auth) } }))
 }

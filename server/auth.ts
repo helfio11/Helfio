@@ -35,7 +35,7 @@ export class KeycloakTokenVerifier implements TokenVerifier {
   private readonly keys
 
   constructor(
-    issuer = process.env.KEYCLOAK_ISSUER ?? defaultIssuer(),
+    issuer = process.env.KEYCLOAK_ISSUER?.trim() || defaultIssuer(),
     private readonly audience = process.env.KEYCLOAK_AUDIENCE ?? 'helfio-web',
     private readonly clientId = process.env.KEYCLOAK_CLIENT_ID ?? 'helfio-web',
   ) {

@@ -1,0 +1,10 @@
+<script setup lang="ts">
+import { onMounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { getAccessToken, login } from '../auth/keycloak'
+interface Provider { userId: string; displayName: string; description: string; city: string; postalCode: string; availabilityStatus: string; yearsExperience: number; startingPrice: number | null; currency: string; services: { id: string; slug: string; translations: Record<string, { name: string }> }[]; phone?: string; contactEmail?: string }
+const props = defineProps<{ id: string }>(); const { t, locale } = useI18n(); const provider = ref<Provider | null>(null); const loading = ref(true); const missing = ref(false)
+onMounted(async () => { const response = await fetch(`/api/v1/providers/${encodeURIComponent(props.id)}`); if (response.ok) provider.value = (await response.json() as { data: Provider }).data; else missing.value = true; loading.value = false })
+async function contact() { const token = await getAccessToken(); if (!token) { await login(); return }; window.location.hash = 'inbox' }
+</script>
+<template><section class="content-section container provider-detail"><p v-if="loading" class="job-empty">{{ t('search.loading') }}</p><p v-else-if="missing" class="job-message">{{ t('search.notFound') }}</p><article v-else-if="provider" class="provider-detail-content"><span class="section-kicker">{{ t('providers.profile') }}</span><h2>{{ provider.displayName }}</h2><p>{{ provider.description }}</p><p>{{ provider.city }} · {{ provider.postalCode }} · {{ provider.yearsExperience }} {{ t('offers.years') }}</p><p>{{ provider.startingPrice === null ? t('providers.priceOnRequest') : `${provider.startingPrice} ${provider.currency}` }} · {{ provider.availabilityStatus }}</p><div class="provider-tags"><span v-for="service in provider.services" :key="service.id">{{ service.translations[locale]?.name || service.translations.en?.name || service.slug }}</span></div><button class="header-cta" type="button" @click="contact">{{ t('search.contact') }}</button></article></section></template>
