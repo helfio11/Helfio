@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { createClient } from 'redis'
 import { authenticate, hasRole, type AuthenticatedIdentity, type TokenVerifier } from './auth.js'
 import { createOpenAiProvider, type AiModelResponse, type AiToolCall, type AiToolDefinition } from './ai.js'
 import { buildCategoryTree, type CategoryNode } from './categories.js'
@@ -140,14 +141,46 @@ const writeRateLimit = new Map<string, { startedAt: number; count: number }>()
 const writeRateWindowMs = 60_000
 const writeRateLimitCount = 120
 const apiMetrics = { requests: 0, errors: 0, rateLimited: 0 }
+const redisRateLimitWindowSeconds = 60
+const redisClient = createClient({ url: process.env.REDIS_URL ?? 'redis://localhost:6379' })
+let redisConnectPromise: Promise<boolean> | null = null
+
+redisClient.on('error', () => undefined)
+redisClient.unref()
+
+async function redisReady() {
+  if (redisClient.isReady) return true
+  if (!redisConnectPromise) {
+    redisConnectPromise = redisClient.connect().then(() => true).catch(() => {
+      redisConnectPromise = null
+      return false
+    })
+  }
+  return redisConnectPromise
+}
+
+async function redisAllow(key: string, limit: number) {
+  if (!(await redisReady())) return null
+  try {
+    const redisKey = `helfio:rate:${key}`
+    const count = await redisClient.incr(redisKey)
+    if (count === 1) await redisClient.expire(redisKey, redisRateLimitWindowSeconds)
+    return count <= limit
+  } catch {
+    redisConnectPromise = null
+    return null
+  }
+}
 
 function requestAddress(request: IncomingMessage) {
   return request.socket.remoteAddress ?? 'unknown'
 }
 
-function allowWrite(request: IncomingMessage) {
+async function allowWrite(request: IncomingMessage) {
   const now = Date.now()
   const key = `${requestAddress(request)}:${request.url?.split('?')[0] ?? '/'}`
+  const distributed = await redisAllow(`write:${key}`, writeRateLimitCount)
+  if (distributed !== null) return distributed
   const bucket = writeRateLimit.get(key)
   if (!bucket || now - bucket.startedAt >= writeRateWindowMs) {
     writeRateLimit.set(key, { startedAt: now, count: 1 })
@@ -482,7 +515,9 @@ const aiRateWindowMs = 60_000
 const aiRateLimit = 30
 const aiRateBuckets = new Map<string, { startedAt: number; count: number }>()
 
-function allowAiRequest(key: string): boolean {
+async function allowAiRequest(key: string) {
+  const distributed = await redisAllow(`ai:${key}`, aiRateLimit)
+  if (distributed !== null) return distributed
   const now = Date.now()
   const bucket = aiRateBuckets.get(key)
   if (!bucket || now - bucket.startedAt >= aiRateWindowMs) { aiRateBuckets.set(key, { startedAt: now, count: 1 }); return true }
@@ -687,7 +722,7 @@ export function createApiHandler(dependencies: ApiDependencies) {
         }
         return
       }
-      if (url.pathname.startsWith('/api/v1/') && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method ?? '') && !allowWrite(request)) {
+      if (url.pathname.startsWith('/api/v1/') && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method ?? '') && !await allowWrite(request)) {
         apiMetrics.rateLimited += 1
         response.setHeader('retry-after', '60')
         sendJson(response, 429, { error: 'Too many write requests', requestId }); return
@@ -811,7 +846,7 @@ export function createApiHandler(dependencies: ApiDependencies) {
         const identity = await authenticate(request, dependencies.verifier)
         const clientAddress = dependencies.aiRateKey?.(request) ?? request.socket.remoteAddress ?? 'unknown'
         const rateKey = identity ? `user:${identity.subject}` : `ip:${clientAddress}`
-        if (!allowAiRequest(rateKey)) { sendJson(response, 429, { error: 'AI assistant rate limit exceeded' }); return }
+        if (!await allowAiRequest(rateKey)) { sendJson(response, 429, { error: 'AI assistant rate limit exceeded' }); return }
         let account: UserAccount | undefined
         if (identity) {
           account = await (dependencies.accounts ?? defaultAccounts).findOrCreateUser(identity)

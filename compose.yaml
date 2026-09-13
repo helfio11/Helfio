@@ -76,6 +76,13 @@ services:
     volumes:
       - helfio-nats-data:/data
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - helfio-redis-data:/data
+
   marketplace:
     build: ./services/marketplace
     environment:
@@ -97,3 +104,4 @@ volumes:
   keycloak-postgres-data:
   helfio-kafka-data:
   helfio-nats-data:
+  helfio-redis-data:
