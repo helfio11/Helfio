@@ -14,6 +14,11 @@ const selectedId = ref<string | null>(null)
 const loading = ref(true)
 const saving = ref(false)
 const message = ref('')
+const reviewRating = ref(0)
+const reviewComment = ref('')
+const reviewSaving = ref(false)
+const reviewMessage = ref('')
+const reviewedJobs = ref(new Set<string>())
 const form = reactive({ categoryId: '', title: '', description: '', city: '', postalCode: '', countryCode: 'DE', budgetType: 'RANGE', budgetMin: null as number | null, budgetMax: null as number | null, currency: 'EUR', preferredDate: '', preferredTimeText: '' })
 
 function flatten(items: CategoryNode[]): CategoryNode[] { return items.flatMap((item) => [item, ...flatten(item.children)]) }
@@ -32,11 +37,27 @@ function resetForm() {
   selectedId.value = null
   Object.assign(form, { categoryId: categories.value[0]?.id ?? '', title: '', description: '', city: '', postalCode: '', countryCode: 'DE', budgetType: 'RANGE', budgetMin: null, budgetMax: null, currency: 'EUR', preferredDate: '', preferredTimeText: '' })
   message.value = ''
+  reviewRating.value = 0
+  reviewComment.value = ''
+  reviewMessage.value = ''
 }
 function selectJob(job: Job) {
   selectedId.value = job.id
   Object.assign(form, { ...job, postalCode: job.postalCode ?? '', preferredDate: job.preferredDate ?? '', preferredTimeText: job.preferredTimeText ?? '' })
   message.value = ''
+  reviewRating.value = 0
+  reviewComment.value = ''
+  reviewMessage.value = ''
+}
+async function submitReview() {
+  const job = selectedJob()
+  if (!job || job.status !== 'COMPLETED' || !reviewRating.value || reviewedJobs.value.has(job.id)) return
+  reviewSaving.value = true
+  reviewMessage.value = ''
+  const response = await api(`/api/v1/jobs/${job.id}/review`, { method: 'POST', body: JSON.stringify({ rating: reviewRating.value, comment: reviewComment.value || null }) })
+  if (response.ok) { reviewedJobs.value.add(job.id); reviewMessage.value = t('reviews.submitted') }
+  else reviewMessage.value = response.status === 409 ? t('reviews.duplicate') : t('reviews.submitError')
+  reviewSaving.value = false
 }
 async function save() {
   saving.value = true
@@ -47,10 +68,10 @@ async function save() {
   else { message.value = t('jobs.saved'); await refresh(); if (!selectedId.value) resetForm() }
   saving.value = false
 }
-async function transition(action: 'publish' | 'cancel') {
+async function transition(action: 'publish' | 'cancel' | 'confirm') {
   if (!selectedId.value) return
   const response = await api(`/api/v1/jobs/${selectedId.value}/${action}`, { method: 'POST' })
-  message.value = response.ok ? t(`jobs.${action === 'publish' ? 'published' : 'cancelled'}`) : t('jobs.transitionError')
+  message.value = response.ok ? t(`jobs.${action === 'publish' ? 'published' : action === 'cancel' ? 'cancelled' : 'confirmed'}`) : t('jobs.transitionError')
   if (response.ok) await refresh()
 }
 onMounted(async () => {
@@ -75,7 +96,8 @@ onMounted(async () => {
         <div class="job-fields"><label>{{ t('jobs.city') }}<input v-model="form.city" required maxlength="120"></label><label>{{ t('jobs.postalCode') }}<input v-model="form.postalCode" maxlength="20"></label><label>{{ t('jobs.country') }}<input v-model="form.countryCode" required maxlength="2"></label></div>
         <div class="job-fields"><label>{{ t('jobs.budgetType') }}<select v-model="form.budgetType"><option value="RANGE">{{ t('jobs.range') }}</option><option value="FIXED">{{ t('jobs.fixed') }}</option><option value="NEGOTIABLE">{{ t('jobs.negotiable') }}</option></select></label><label>{{ t('jobs.minimum') }}<input v-model.number="form.budgetMin" type="number" min="0" step="0.01"></label><label>{{ t('jobs.maximum') }}<input v-model.number="form.budgetMax" type="number" min="0" step="0.01"></label><label>{{ t('jobs.currency') }}<select v-model="form.currency"><option>EUR</option><option>USD</option><option>GBP</option><option>CHF</option></select></label></div>
         <div class="job-fields"><label>{{ t('jobs.preferredDate') }}<input v-model="form.preferredDate" type="date"></label><label>{{ t('jobs.preferredTime') }}<input v-model="form.preferredTimeText" maxlength="120"></label></div>
-        <div class="job-actions"><button class="header-cta" type="submit" :disabled="saving || (Boolean(selectedId) && !editAllowed())">{{ saving ? t('jobs.saving') : t('jobs.saveDraft') }}</button><button v-if="selectedId && selectedJob()?.status === 'DRAFT'" type="button" class="job-secondary" @click="transition('publish')">{{ t('jobs.publish') }}</button><button v-if="selectedId && (selectedJob()?.status === 'DRAFT' || selectedJob()?.status === 'OPEN')" type="button" class="job-danger" @click="transition('cancel')">{{ t('jobs.cancel') }}</button><span v-if="message" class="job-message">{{ message }}</span></div>
+        <div class="job-actions"><button class="header-cta" type="submit" :disabled="saving || (Boolean(selectedId) && !editAllowed())">{{ saving ? t('jobs.saving') : t('jobs.saveDraft') }}</button><button v-if="selectedId && selectedJob()?.status === 'DRAFT'" type="button" class="job-secondary" @click="transition('publish')">{{ t('jobs.publish') }}</button><button v-if="selectedId && (selectedJob()?.status === 'DRAFT' || selectedJob()?.status === 'OPEN' || selectedJob()?.status === 'ASSIGNED')" type="button" class="job-danger" @click="transition('cancel')">{{ t('jobs.cancel') }}</button><button v-if="selectedId && selectedJob()?.status === 'AWAITING_CONFIRMATION'" type="button" class="header-cta" @click="transition('confirm')">{{ t('jobs.confirm') }}</button><span v-if="message" class="job-message">{{ message }}</span></div>
+        <div v-if="selectedJob()?.status === 'COMPLETED'" class="review-form"><h3>{{ t('reviews.leave') }}</h3><div class="review-stars"><button v-for="star in 5" :key="star" type="button" :aria-label="`${star}`" :disabled="reviewSaving || reviewedJobs.has(selectedJob()!.id)" @click="reviewRating = star">{{ star <= reviewRating ? '★' : '☆' }}</button></div><textarea v-model="reviewComment" maxlength="2000" :placeholder="t('reviews.comment')" :disabled="reviewSaving || reviewedJobs.has(selectedJob()!.id)" rows="3" /><button class="header-cta" type="button" :disabled="reviewSaving || !reviewRating || reviewedJobs.has(selectedJob()!.id)" @click="submitReview">{{ reviewSaving ? t('reviews.saving') : t('reviews.submit') }}</button><span v-if="reviewMessage" class="job-message">{{ reviewMessage }}</span></div>
       </form>
     </div>
   </section>

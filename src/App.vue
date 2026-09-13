@@ -11,6 +11,7 @@ import ProviderProfilePanel from './components/ProviderProfilePanel.vue'
 import SearchView from './components/SearchView.vue'
 import ProviderDetailView from './components/ProviderDetailView.vue'
 import JobDetailView from './components/JobDetailView.vue'
+import AdminPanel from './components/AdminPanel.vue'
 import AppFooter from './components/AppFooter.vue'
 import { useAuth } from './auth/keycloak'
 import { register } from './auth/keycloak'
@@ -56,6 +57,7 @@ onUnmounted(() => window.removeEventListener('popstate', routeChanged))
       <section id="about" class="cta-section container"><div class="cta-mark">✦</div><div><span class="section-kicker">{{ t('cta.kicker') }}</span><h2>{{ t('cta.title') }}</h2><p>{{ t('cta.description') }}</p></div><button class="cta-button" type="button" @click="register">{{ t('cta.register') }} <span>→</span></button></section>
     </main>
     <SearchView v-else-if="routePath === '/search' || routePath.startsWith('/services/')" :initial-category="routePath.startsWith('/services/') ? routePath.slice('/services/'.length) : null" />
+    <AdminPanel v-else-if="routePath === '/admin' || routePath.startsWith('/admin/')" />
     <ProviderDetailView v-else-if="routePath.startsWith('/providers/')" :id="routePath.slice('/providers/'.length)" />
     <JobDetailView v-else-if="routePath.startsWith('/jobs/')" :id="routePath.slice('/jobs/'.length)" />
     <SearchView v-else />

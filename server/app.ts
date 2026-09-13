@@ -2,9 +2,10 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { authenticate, hasRole, type AuthenticatedIdentity, type TokenVerifier } from './auth.js'
 import { createOpenAiProvider, type AiModelResponse, type AiToolCall, type AiToolDefinition } from './ai.js'
 import { buildCategoryTree, type CategoryNode } from './categories.js'
-import { appendAiConversation, createConversation, createJob, createOffer, findOrCreateUser, getAiConversation, getConversation, getConversations, getJob, getJobs, getOffersForJob, getOffersForProvider, getOpenJobsForProvider, getPublicProvider, getPublicProviders, getProviderProfile, getPushSubscriptions, getUnreadMessageCount, markConversationRead, savePushSubscription, searchMarketplace, saveProviderProfile, setProviderServices, sendMessage, transitionJob, transitionOffer, updateJob, updateOffer, updateUserAccount, withdrawOffer, type AvailabilityStatus, type Conversation, type ConversationInput, type Job, type JobInput, type JobStatus, type Message, type Offer, type OfferInput, type PreferredLocale, type ProviderProfile, type ProviderProfileInput, type PushSubscription, type SearchInput, type SearchKind, type SearchResults, type SearchSort, type UserAccount } from './db.js'
+import { appendAiConversation, confirmJob, createConversation, createJob, createOffer, createReview, findOrCreateUser, finishJob, getAiConversation, getAssignedJobs, getConversation, getConversations, getJob, getJobs, getOffersForJob, getOffersForProvider, getOpenJobsForProvider, getPublicProvider, getPublicProviders, getProviderProfile, getProviderRating, getProviderReviews, getPushSubscriptions, getUnreadMessageCount, markConversationRead, savePushSubscription, searchMarketplace, saveProviderProfile, setProviderServices, sendMessage, startJob, transitionJob, transitionOffer, updateJob, updateOffer, updateUserAccount, withdrawOffer, type AvailabilityStatus, type Conversation, type ConversationInput, type Job, type JobInput, type JobStatus, type Message, type Offer, type OfferInput, type PreferredLocale, type ProviderProfile, type ProviderProfileInput, type PushSubscription, type RatingSummary, type Review, type ReviewInput, type SearchInput, type SearchKind, type SearchResults, type SearchSort, type UserAccount } from './db.js'
 import { notifyPush, vapidPublicKey, type PushSubscriptionInput } from './push.js'
 import { type ApplicationRole } from './roles.js'
+import { adminDashboard, auditLog, createCategory, deleteCategory, getSettings, listCategories, listJobs, listProviders, listReviews, listUsers, moderateReview, recordAudit, updateCategory, updateProviderStatus, updateSettings, updateUserStatus, type AdminJob, type AdminMetrics, type AdminPage, type AdminProvider, type AdminReview, type AdminUser, type AuditEntry, type CategoryInput } from './admin.js'
 
 export interface AccountStore {
   findOrCreateUser(identity: AuthenticatedIdentity): Promise<UserAccount>
@@ -21,10 +22,14 @@ export interface ProviderStore {
 
 export interface JobStore {
   getJobs(customerUserId: string): Promise<Job[]>
+  getAssignedJobs(providerUserId: string): Promise<Job[]>
   getJob(id: string, customerUserId?: string): Promise<Job | null>
   createJob(customerUserId: string, input: JobInput): Promise<Job>
   updateJob(id: string, customerUserId: string, changes: Partial<JobInput>): Promise<Job>
   transitionJob(id: string, customerUserId: string, from: JobStatus, to: JobStatus): Promise<Job>
+  startJob(id: string, providerUserId: string): Promise<Job>
+  finishJob(id: string, providerUserId: string): Promise<Job>
+  confirmJob(id: string, customerUserId: string): Promise<Job>
 }
 
 export interface OfferStore {
@@ -48,6 +53,12 @@ export interface MessagingStore {
   getPushSubscriptions(userId: string): Promise<PushSubscription[]>
 }
 
+export interface ReviewStore {
+  createReview(customerUserId: string, jobId: string, input: ReviewInput): Promise<Review>
+  getProviderReviews(providerUserId: string): Promise<Review[]>
+  getProviderRating(providerUserId: string): Promise<RatingSummary>
+}
+
 export interface ApiDependencies {
   verifier: TokenVerifier
   accounts?: AccountStore
@@ -55,6 +66,7 @@ export interface ApiDependencies {
   jobs?: JobStore
   offers?: OfferStore
   messaging?: MessagingStore
+  reviews?: ReviewStore
   pushNotify?: (subscription: PushSubscriptionInput, payload: { title: string; body: string; conversationId: string }) => Promise<boolean>
   getCategories?: (filter?: string) => Promise<Awaited<ReturnType<typeof import('./db.js').getCategories>>>
   search?: (input: SearchInput) => Promise<SearchResults>
@@ -62,13 +74,37 @@ export interface ApiDependencies {
   appendAiConversation?: typeof appendAiConversation
   aiRateKey?: (request: IncomingMessage) => string
   aiProvider?: { complete(messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>, tools?: AiToolDefinition[], model?: string): Promise<AiModelResponse> }
+  admin?: AdminStore
 }
+
+export interface AdminStore {
+  dashboard(): Promise<AdminMetrics>
+  users(query: AdminListQuery): Promise<AdminPage<AdminUser>>
+  providers(query: AdminListQuery): Promise<AdminPage<AdminProvider>>
+  jobs(query: AdminListQuery): Promise<AdminPage<AdminJob>>
+  reviews(query: AdminListQuery): Promise<AdminPage<AdminReview>>
+  categories(): Promise<Awaited<ReturnType<typeof listCategories>>>
+  createCategory(input: CategoryInput): Promise<Awaited<ReturnType<typeof createCategory>>>
+  updateCategory(id: string, input: CategoryInput): Promise<Awaited<ReturnType<typeof updateCategory>>>
+  deleteCategory(id: string): Promise<void>
+  updateUserStatus(id: string, status: string): Promise<AdminUser>
+  updateProviderStatus(id: string, input: { accountStatus?: string; verificationStatus?: string }): Promise<AdminProvider>
+  moderateReview(id: string, status: 'VISIBLE' | 'HIDDEN'): Promise<AdminReview>
+  auditLog(query: { page: number; pageSize: number }): Promise<AdminPage<AuditEntry>>
+  recordAudit(adminUserId: string, action: string, targetType: string, targetId: string, before: unknown, after: unknown): Promise<void>
+  settings(): Promise<Record<string, unknown>>
+  updateSettings(adminUserId: string, values: Record<string, unknown>): Promise<Record<string, unknown>>
+}
+
+interface AdminListQuery { search: string; status: string | null; page: number; pageSize: number }
 
 const defaultAccounts: AccountStore = { findOrCreateUser, updateUserAccount }
 const defaultProviders: ProviderStore = { getProviderProfile, saveProviderProfile, setProviderServices, getPublicProvider, getPublicProviders }
-const defaultJobs: JobStore = { getJobs, getJob, createJob, updateJob, transitionJob }
+const defaultJobs: JobStore = { getJobs, getAssignedJobs, getJob, createJob, updateJob, transitionJob, startJob, finishJob, confirmJob }
 const defaultOffers: OfferStore = { getOpenJobs: getOpenJobsForProvider, getJobOffers: getOffersForJob, getProviderOffers: getOffersForProvider, createOffer, updateOffer, withdrawOffer, transitionOffer }
 const defaultMessaging: MessagingStore = { getConversations, getConversation, createConversation, sendMessage, markConversationRead, getUnreadMessageCount, savePushSubscription, getPushSubscriptions }
+const defaultReviews: ReviewStore = { createReview, getProviderReviews, getProviderRating }
+const defaultAdmin: AdminStore = { dashboard: adminDashboard, users: listUsers, providers: listProviders, jobs: listJobs, reviews: listReviews, categories: listCategories, createCategory, updateCategory, deleteCategory, updateUserStatus, updateProviderStatus, moderateReview, auditLog, recordAudit, settings: getSettings, updateSettings }
 const locales = new Set<PreferredLocale>(['en', 'de', 'sq', 'tr'])
 const searchKinds = new Set<SearchKind>(['all', 'providers', 'jobs', 'categories'])
 const searchSorts = new Set<SearchSort>(['relevance', 'newest', 'price'])
@@ -89,12 +125,15 @@ function searchInput(url: URL): SearchInput | null {
   const pageSize = Number(url.searchParams.get('pageSize') || '12')
   const availabilityValue = url.searchParams.get('availability')
   const minValue = url.searchParams.get('minPrice'); const maxValue = url.searchParams.get('maxPrice')
+  const minRatingValue = url.searchParams.get('minRating')
   const minPrice = minValue === null || minValue === '' ? null : Number(minValue); const maxPrice = maxValue === null || maxValue === '' ? null : Number(maxValue)
+  const minRating = minRatingValue === null || minRatingValue === '' ? null : Number(minRatingValue)
   if (query.length > 120 || category && (category.length > 120 || !/^[0-9a-f-]{36}$/.test(category) && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(category))) return null
   if (city && (city.length > 120 || /[<>]/.test(city)) || !searchKinds.has(kind) || !searchSorts.has(sort) || !Number.isInteger(page) || page < 1 || page > 10000 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 50) return null
   if (availabilityValue && !availabilityStatuses.has(availabilityValue as AvailabilityStatus)) return null
   if (minPrice !== null && (!Number.isFinite(minPrice) || minPrice < 0) || maxPrice !== null && (!Number.isFinite(maxPrice) || maxPrice < 0) || minPrice !== null && maxPrice !== null && minPrice > maxPrice) return null
-  return { kind, query, category, city, availability: availabilityValue as AvailabilityStatus | null, minPrice, maxPrice, sort, page, pageSize }
+  if (minRating !== null && (!Number.isInteger(minRating) || minRating < 1 || minRating > 5)) return null
+  return { kind, query, category, city, availability: availabilityValue as AvailabilityStatus | null, minPrice, maxPrice, minRating, sort, page, pageSize }
 }
 
 function flatten(nodes: CategoryNode[]): CategoryNode[] {
@@ -155,14 +194,24 @@ async function roleRoute(request: IncomingMessage, response: ServerResponse, dep
   sendJson(response, 200, { data: { allowed: true, role } })
 }
 
-function publicProviderResponse(profile: ProviderProfile) {
+function publicProviderResponse(profile: ProviderProfile, legacyRating = false) {
   return {
     userId: profile.userId, displayName: profile.displayName, description: profile.description,
     profileImageRef: profile.profileImageRef, city: profile.city, postalCode: profile.postalCode,
     serviceRadiusKm: profile.serviceRadiusKm, availabilityStatus: profile.availabilityStatus,
     yearsExperience: profile.yearsExperience, startingPrice: profile.startingPrice, currency: profile.currency,
-    services: profile.services, rating: null, contactAvailable: Boolean(profile.phone || profile.contactEmail),
+    services: profile.services, rating: legacyRating ? profile.rating?.averageRating ?? null : profile.rating?.reviewCount ? profile.rating : null, averageRating: profile.rating?.averageRating ?? null, reviewCount: profile.rating?.reviewCount ?? 0, contactAvailable: Boolean(profile.phone || profile.contactEmail),
   }
+}
+
+function publicReviewResponse(review: Review) {
+  return { id: review.id, rating: review.rating, comment: review.comment, reviewerDisplayName: review.reviewerDisplayName, createdAt: review.createdAt, updatedAt: review.updatedAt }
+}
+
+function reviewInput(body: Record<string, unknown>): ReviewInput | null {
+  if (Object.keys(body).some((key) => !['rating', 'comment'].includes(key)) || !Number.isInteger(body.rating) || Number(body.rating) < 1 || Number(body.rating) > 5) return null
+  if (body.comment !== undefined && body.comment !== null && (typeof body.comment !== 'string' || body.comment.trim().length > 2000)) return null
+  return { rating: Number(body.rating), comment: body.comment === undefined || body.comment === null ? null : body.comment.trim() || null }
 }
 
 function providerProfileResponse(profile: ProviderProfile) {
@@ -189,6 +238,16 @@ async function requireCustomer(request: IncomingMessage, response: ServerRespons
   return authenticated
 }
 
+async function requireAdmin(request: IncomingMessage, response: ServerResponse, dependencies: ApiDependencies) {
+  const authenticated = await requireAccount(request, response, dependencies)
+  if (!authenticated) return null
+  if (!hasRole(authenticated.identity, 'ADMIN')) {
+    sendJson(response, 403, { error: 'Admin role required' })
+    return null
+  }
+  return authenticated
+}
+
 async function requireInboxUser(request: IncomingMessage, response: ServerResponse, dependencies: ApiDependencies) {
   const authenticated = await requireAccount(request, response, dependencies)
   if (!authenticated) return null
@@ -199,10 +258,32 @@ async function requireInboxUser(request: IncomingMessage, response: ServerRespon
   return authenticated
 }
 
-const jobStatuses = new Set<JobStatus>(['DRAFT', 'OPEN', 'ASSIGNED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED'])
+const jobStatuses = new Set<JobStatus>(['DRAFT', 'OPEN', 'ASSIGNED', 'IN_PROGRESS', 'AWAITING_CONFIRMATION', 'COMPLETED', 'CANCELLED'])
 const budgetTypes = new Set(['FIXED', 'RANGE', 'NEGOTIABLE'])
 const currencies = new Set(['EUR', 'USD', 'GBP', 'CHF'])
 const offerStatuses = new Set(['PENDING', 'ACCEPTED', 'REJECTED', 'WITHDRAWN'])
+
+function adminListQuery(url: URL): AdminListQuery {
+  const page = Math.max(1, Math.min(10000, Number(url.searchParams.get('page') || '1')))
+  const pageSize = Math.max(1, Math.min(100, Number(url.searchParams.get('pageSize') || '25')))
+  return { search: (url.searchParams.get('search') || '').trim().slice(0, 120), status: url.searchParams.get('status'), page: Number.isInteger(page) ? page : 1, pageSize: Number.isInteger(pageSize) ? pageSize : 25 }
+}
+
+function categoryAdminInput(body: Record<string, unknown>): CategoryInput | null {
+  const translations = body.translations
+  if (typeof body.slug !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(body.slug) || (body.parentId !== null && body.parentId !== undefined && typeof body.parentId !== 'string') || !['active', 'inactive'].includes(String(body.status ?? 'active')) || typeof body.sortOrder !== 'number' || !Number.isInteger(body.sortOrder) || typeof body.showInNavigation !== 'boolean' || typeof body.showOnHomepage !== 'boolean' || !translations || typeof translations !== 'object' || Array.isArray(translations)) return null
+  const normalized: CategoryInput['translations'] = {}
+  for (const locale of ['en', 'de', 'sq', 'tr']) {
+    const value = (translations as Record<string, unknown>)[locale]
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+    const translation = value as Record<string, unknown>
+    if (typeof translation.name !== 'string' || !translation.name.trim()) return null
+    const description = translation.description
+    if (description !== null && description !== undefined && typeof description !== 'string') return null
+    normalized[locale] = { name: translation.name.trim().slice(0, 160), description: description === undefined ? null : description as string | null }
+  }
+  return { parentId: body.parentId === undefined ? null : body.parentId as string | null, slug: body.slug, status: body.status as 'active' | 'inactive', icon: body.icon === null || body.icon === undefined ? null : typeof body.icon === 'string' ? body.icon.slice(0, 20) : null, sortOrder: body.sortOrder, showInNavigation: body.showInNavigation, showOnHomepage: body.showOnHomepage, translations: normalized }
+}
 
 function validDate(value: unknown) {
   if (value === null || value === undefined) return true
@@ -656,7 +737,76 @@ export function createApiHandler(dependencies: ApiDependencies) {
       if (request.method === 'GET' && url.pathname === '/api/v1/authz/provider') return roleRoute(request, response, dependencies, 'PROVIDER')
       if (request.method === 'GET' && url.pathname === '/api/v1/authz/admin') return roleRoute(request, response, dependencies, 'ADMIN')
 
+      const admin = dependencies.admin ?? defaultAdmin
+      if (url.pathname.startsWith('/api/v1/admin')) {
+        const authenticated = await requireAdmin(request, response, dependencies)
+        if (!authenticated) return
+        const query = adminListQuery(url)
+        if (request.method === 'GET' && url.pathname === '/api/v1/admin/dashboard') { sendJson(response, 200, { data: await admin.dashboard() }); return }
+        if (request.method === 'GET' && url.pathname === '/api/v1/admin/users') { sendJson(response, 200, { data: await admin.users(query) }); return }
+        const userDetail = url.pathname.match(/^\/api\/v1\/admin\/users\/([^/]+)$/)
+        if (request.method === 'GET' && userDetail) { const result = await admin.users({ ...query, search: userDetail[1], pageSize: 1 }); sendJson(response, result.items[0] ? 200 : 404, result.items[0] ? { data: result.items[0] } : { error: 'User not found' }); return }
+        if (request.method === 'GET' && url.pathname === '/api/v1/admin/providers') { sendJson(response, 200, { data: await admin.providers(query) }); return }
+        const providerDetail = url.pathname.match(/^\/api\/v1\/admin\/providers\/([^/]+)$/)
+        if (request.method === 'GET' && providerDetail) { const result = await admin.providers({ ...query, search: providerDetail[1], pageSize: 1 }); sendJson(response, result.items[0] ? 200 : 404, result.items[0] ? { data: result.items[0] } : { error: 'Provider not found' }); return }
+        if (request.method === 'GET' && url.pathname === '/api/v1/admin/jobs') { sendJson(response, 200, { data: await admin.jobs(query) }); return }
+        const jobDetail = url.pathname.match(/^\/api\/v1\/admin\/jobs\/([^/]+)$/)
+        if (request.method === 'GET' && jobDetail) { const result = await admin.jobs({ ...query, search: jobDetail[1], pageSize: 1 }); sendJson(response, result.items[0] ? 200 : 404, result.items[0] ? { data: result.items[0] } : { error: 'Job not found' }); return }
+        if (request.method === 'GET' && url.pathname === '/api/v1/admin/reviews') { sendJson(response, 200, { data: await admin.reviews(query) }); return }
+        const reviewDetail = url.pathname.match(/^\/api\/v1\/admin\/reviews\/([^/]+)$/)
+        if (request.method === 'GET' && reviewDetail) { const result = await admin.reviews({ ...query, search: reviewDetail[1], pageSize: 1 }); sendJson(response, result.items[0] ? 200 : 404, result.items[0] ? { data: result.items[0] } : { error: 'Review not found' }); return }
+        if (request.method === 'GET' && url.pathname === '/api/v1/admin/categories') { sendJson(response, 200, { data: await admin.categories() }); return }
+        if (request.method === 'GET' && url.pathname === '/api/v1/admin/audit-log') { sendJson(response, 200, { data: await admin.auditLog({ page: query.page, pageSize: query.pageSize }) }); return }
+        if (request.method === 'GET' && url.pathname === '/api/v1/admin/settings') { sendJson(response, 200, { data: await admin.settings() }); return }
+        const userStatus = url.pathname.match(/^\/api\/v1\/admin\/users\/([^/]+)\/status$/)
+        if (userStatus && request.method === 'PATCH') {
+          const body = await readBody(request); if (!['ACTIVE', 'SUSPENDED', 'DISABLED'].includes(String(body.status))) { sendJson(response, 400, { error: 'Invalid account status' }); return }
+          const updated = await admin.updateUserStatus(userStatus[1], String(body.status)); await admin.recordAudit(authenticated.account.id, 'user.status.update', 'user', userStatus[1], null, { status: body.status }); sendJson(response, 200, { data: updated }); return
+        }
+        const providerStatus = url.pathname.match(/^\/api\/v1\/admin\/providers\/([^/]+)\/status$/)
+        if (providerStatus && request.method === 'PATCH') {
+          const body = await readBody(request); if (body.accountStatus !== undefined && !['ACTIVE', 'SUSPENDED', 'DISABLED'].includes(String(body.accountStatus)) || body.verificationStatus !== undefined && !['UNVERIFIED', 'PENDING', 'VERIFIED'].includes(String(body.verificationStatus))) { sendJson(response, 400, { error: 'Invalid provider status' }); return }
+          if (body.accountStatus === undefined && body.verificationStatus === undefined) { sendJson(response, 400, { error: 'No provider status supplied' }); return }
+          const updated = await admin.updateProviderStatus(providerStatus[1], { accountStatus: body.accountStatus as string | undefined, verificationStatus: body.verificationStatus as string | undefined }); await admin.recordAudit(authenticated.account.id, 'provider.status.update', 'provider', providerStatus[1], null, { accountStatus: body.accountStatus ?? null, verificationStatus: body.verificationStatus ?? null }); sendJson(response, 200, { data: updated }); return
+        }
+        const categoryMatch = url.pathname.match(/^\/api\/v1\/admin\/categories(?:\/([^/]+))?$/)
+        if (categoryMatch && (request.method === 'POST' || request.method === 'PATCH')) {
+          const input = categoryAdminInput(await readBody(request)); if (!input) { sendJson(response, 400, { error: 'Invalid category' }); return }
+          const updated = categoryMatch[1] && request.method === 'PATCH' ? await admin.updateCategory(categoryMatch[1], input) : request.method === 'POST' ? await admin.createCategory(input) : null
+          if (!updated) { sendJson(response, 404, { error: 'Category not found' }); return }
+          await admin.recordAudit(authenticated.account.id, request.method === 'POST' ? 'category.create' : 'category.update', 'category', updated.id, null, { slug: updated.slug, status: updated.status, translations: updated.translations }); sendJson(response, request.method === 'POST' ? 201 : 200, { data: updated }); return
+        }
+        if (categoryMatch && request.method === 'DELETE') {
+          try { await admin.deleteCategory(categoryMatch[1] ?? ''); await admin.recordAudit(authenticated.account.id, 'category.delete', 'category', categoryMatch[1] ?? '', null, null); sendJson(response, 204, null) } catch (error) { sendJson(response, error instanceof Error && error.message === 'Category not found' ? 404 : 409, { error: 'Category cannot be deleted while it is in use' }) } return
+        }
+        const reviewModeration = url.pathname.match(/^\/api\/v1\/admin\/reviews\/([^/]+)\/moderation$/)
+        if (reviewModeration && request.method === 'PATCH') {
+          const body = await readBody(request); if (!['VISIBLE', 'HIDDEN'].includes(String(body.status))) { sendJson(response, 400, { error: 'Invalid moderation status' }); return }
+          const updated = await admin.moderateReview(reviewModeration[1], body.status as 'VISIBLE' | 'HIDDEN'); await admin.recordAudit(authenticated.account.id, 'review.moderation.update', 'review', reviewModeration[1], null, { moderationStatus: updated.moderationStatus }); sendJson(response, 200, { data: updated }); return
+        }
+        if (request.method === 'PATCH' && url.pathname === '/api/v1/admin/settings') {
+          const body = await readBody(request); if (Object.keys(body).some((key) => !/^[a-z0-9_]{1,80}$/.test(key))) { sendJson(response, 400, { error: 'Invalid setting key' }); return }
+          const settings = await admin.updateSettings(authenticated.account.id, body); await admin.recordAudit(authenticated.account.id, 'settings.update', 'settings', 'global', null, Object.keys(body)); sendJson(response, 200, { data: settings }); return
+        }
+        sendJson(response, 404, { error: 'Admin route not found' }); return
+      }
+
       const jobs = dependencies.jobs ?? defaultJobs
+      const reviews = dependencies.reviews ?? defaultReviews
+      const reviewJobMatch = url.pathname.match(/^\/api\/v1\/jobs\/([^/]+)\/review$/)
+      if (request.method === 'POST' && reviewJobMatch) {
+        const authenticated = await requireCustomer(request, response, dependencies)
+        if (!authenticated) return
+        if (!/^[0-9a-f-]{36}$/.test(reviewJobMatch[1])) { sendJson(response, 400, { error: 'Invalid job id' }); return }
+        const input = reviewInput(await readBody(request))
+        if (!input) { sendJson(response, 400, { error: 'Invalid review' }); return }
+        try { sendJson(response, 201, { data: publicReviewResponse(await reviews.createReview(authenticated.account.id, reviewJobMatch[1], input)) }) }
+        catch (error) {
+          const message = error instanceof Error ? error.message : ''
+          sendJson(response, message === 'Duplicate review' ? 409 : 403, { error: message === 'Duplicate review' ? message : 'Review not allowed' })
+        }
+        return
+      }
       if (url.pathname === '/api/v1/jobs' && (request.method === 'GET' || request.method === 'POST')) {
         const authenticated = await requireCustomer(request, response, dependencies)
         if (!authenticated) return
@@ -673,7 +823,7 @@ export function createApiHandler(dependencies: ApiDependencies) {
         catch (error) { if (error instanceof Error && error.message === 'Invalid active category') sendJson(response, 400, { error: error.message }); else throw error }
         return
       }
-      const jobMatch = url.pathname.match(/^\/api\/v1\/jobs\/([^/]+)(?:\/(publish|cancel))?$/)
+      const jobMatch = url.pathname.match(/^\/api\/v1\/jobs\/([^/]+)(?:\/(publish|cancel|confirm))?$/)
       if (jobMatch && (request.method === 'GET' || request.method === 'PATCH' || request.method === 'POST')) {
         const authenticated = await requireCustomer(request, response, dependencies)
         if (!authenticated) return
@@ -685,11 +835,21 @@ export function createApiHandler(dependencies: ApiDependencies) {
         if (!jobMatch[2] && request.method === 'GET') { sendJson(response, 200, { data: jobResponse(current) }); return }
         if (jobMatch[2] === 'publish' && request.method === 'POST') {
           if (current.status !== 'DRAFT') { sendJson(response, 400, { error: 'Invalid job transition' }); return }
-          sendJson(response, 200, { data: jobResponse(await jobs.transitionJob(jobId, authenticated.account.id, 'DRAFT', 'OPEN')) }); return
+          try { sendJson(response, 200, { data: jobResponse(await jobs.transitionJob(jobId, authenticated.account.id, 'DRAFT', 'OPEN')) }) }
+          catch { sendJson(response, 409, { error: 'Invalid job transition' }) }
+          return
         }
         if (jobMatch[2] === 'cancel' && request.method === 'POST') {
-          if (current.status !== 'DRAFT' && current.status !== 'OPEN') { sendJson(response, 400, { error: 'Invalid job transition' }); return }
-          sendJson(response, 200, { data: jobResponse(await jobs.transitionJob(jobId, authenticated.account.id, current.status, 'CANCELLED')) }); return
+          if (current.status !== 'DRAFT' && current.status !== 'OPEN' && current.status !== 'ASSIGNED') { sendJson(response, 409, { error: 'Invalid job transition' }); return }
+          try { sendJson(response, 200, { data: jobResponse(await jobs.transitionJob(jobId, authenticated.account.id, current.status, 'CANCELLED')) }) }
+          catch { sendJson(response, 409, { error: 'Invalid job transition' }) }
+          return
+        }
+        if (jobMatch[2] === 'confirm' && request.method === 'POST') {
+          if (current.status !== 'AWAITING_CONFIRMATION') { sendJson(response, 409, { error: 'Invalid job transition' }); return }
+          try { sendJson(response, 200, { data: jobResponse(await jobs.confirmJob(jobId, authenticated.account.id)) }) }
+          catch { sendJson(response, 409, { error: 'Invalid job transition' }) }
+          return
         }
         if (request.method !== 'PATCH' || jobMatch[2]) { sendJson(response, 404, { error: 'Not found' }); return }
         if (current.status !== 'DRAFT' && current.status !== 'OPEN') { sendJson(response, 400, { error: 'Job cannot be edited in this state' }); return }
@@ -704,6 +864,33 @@ export function createApiHandler(dependencies: ApiDependencies) {
       }
 
       const offers = dependencies.offers ?? defaultOffers
+      const assignedJobs = dependencies.jobs ?? defaultJobs
+      if (request.method === 'GET' && url.pathname === '/api/v1/provider/jobs/assigned') {
+        const authenticated = await requireProvider(request, response, dependencies)
+        if (!authenticated) return
+        sendJson(response, 200, { data: (await assignedJobs.getAssignedJobs(authenticated.account.id)).map(providerJobResponse) })
+        return
+      }
+      const providerJobActionMatch = url.pathname.match(/^\/api\/v1\/provider\/jobs\/([^/]+)\/(start|finish)$/)
+      if (request.method === 'POST' && providerJobActionMatch) {
+        const authenticated = await requireProvider(request, response, dependencies)
+        if (!authenticated) return
+        const jobId = providerJobActionMatch[1]
+        if (!/^[0-9a-f-]{36}$/.test(jobId)) { sendJson(response, 400, { error: 'Invalid job id' }); return }
+        const current = await assignedJobs.getJob(jobId)
+        if (!current) { sendJson(response, 404, { error: 'Job not found' }); return }
+        if (current.assignedProviderUserId !== authenticated.account.id) { sendJson(response, 403, { error: 'Job assignment required' }); return }
+        try {
+          const updated = providerJobActionMatch[2] === 'start'
+            ? await assignedJobs.startJob(jobId, authenticated.account.id)
+            : await assignedJobs.finishJob(jobId, authenticated.account.id)
+          sendJson(response, 200, { data: providerJobResponse(updated) })
+        } catch (error) {
+          const message = error instanceof Error ? error.message : ''
+          sendJson(response, message === 'Job not found' ? 404 : 409, { error: 'Invalid job transition' })
+        }
+        return
+      }
       if (request.method === 'GET' && url.pathname === '/api/v1/provider/jobs') {
         const authenticated = await requireProvider(request, response, dependencies)
         if (!authenticated) return
@@ -749,7 +936,7 @@ export function createApiHandler(dependencies: ApiDependencies) {
           const authenticated = await requireCustomer(request, response, dependencies)
           if (!authenticated) return
           try { sendJson(response, 200, { data: offerResponse(await offers.transitionOffer(offerMatch[1], authenticated.account.id, action === 'accept' ? 'ACCEPTED' : 'REJECTED')) }) }
-          catch (error) { const message = error instanceof Error ? error.message : ''; sendJson(response, message === 'Offer ownership required' ? 403 : 400, { error: message === 'Offer ownership required' ? message : 'Invalid offer transition' }) }
+          catch (error) { const message = error instanceof Error ? error.message : ''; sendJson(response, message === 'Offer ownership required' ? 403 : 409, { error: message === 'Offer ownership required' ? message : 'Invalid offer transition' }) }
           return
         }
         const authenticated = await requireProvider(request, response, dependencies)
@@ -792,7 +979,7 @@ export function createApiHandler(dependencies: ApiDependencies) {
         return
       }
       if (request.method === 'GET' && url.pathname === '/api/v1/providers/homepage') {
-        sendJson(response, 200, { data: (await providers.getPublicProviders()).map(publicProviderResponse) })
+        sendJson(response, 200, { data: (await providers.getPublicProviders()).map((profile) => publicProviderResponse(profile, true)) })
         return
       }
       const publicJobMatch = url.pathname.match(/^\/api\/v1\/jobs\/public\/([^/]+)$/)
@@ -803,8 +990,17 @@ export function createApiHandler(dependencies: ApiDependencies) {
       }
       const publicProviderPrefix = '/api/v1/providers/'
       if (request.method === 'GET' && url.pathname.startsWith(publicProviderPrefix)) {
-        const userId = url.pathname.slice(publicProviderPrefix.length)
+        const suffix = url.pathname.slice(publicProviderPrefix.length)
+        const reviewPath = suffix.match(/^([^/]+)\/(reviews|rating)$/)
+        const userId = reviewPath ? reviewPath[1] : suffix
         if (!/^[0-9a-f-]{36}$/.test(userId)) { sendJson(response, 400, { error: 'Invalid provider id' }); return }
+        if (reviewPath) {
+          const profile = await providers.getPublicProvider(userId)
+          if (!profile) { sendJson(response, 404, { error: 'Provider not found' }); return }
+          if (reviewPath[2] === 'reviews') sendJson(response, 200, { data: (await reviews.getProviderReviews(userId)).map(publicReviewResponse) })
+          else sendJson(response, 200, { data: await reviews.getProviderRating(userId) })
+          return
+        }
         const profile = await providers.getPublicProvider(userId)
         sendJson(response, profile ? 200 : 404, profile ? { data: publicProviderResponse(profile) } : { error: 'Provider not found' })
         return

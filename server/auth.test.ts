@@ -28,7 +28,7 @@ const providerProfile: ProviderProfile = {
   createdAt: '2026-01-01', updatedAt: '2026-01-01', services: [{ id: 'category-1', slug: 'cleaning', icon: 'C', translations: { en: { name: 'Cleaning', description: null }, de: { name: 'Reinigung', description: null }, sq: { name: 'Pastrim', description: null }, tr: { name: 'Temizlik', description: null } } }],
 }
 const jobCategory = { id: 'category-1', parentId: null, slug: 'cleaning', status: 'active' as const, icon: 'C', sortOrder: 1, showInNavigation: true, showOnHomepage: true, createdAt: '2026-01-01', updatedAt: '2026-01-01', translations: { en: { name: 'Cleaning', description: 'Home cleaning' }, de: { name: 'Reinigung', description: 'Haushaltsreinigung' }, sq: { name: 'Pastrim', description: 'Pastrim shtepie' }, tr: { name: 'Temizlik', description: 'Ev temizligi' } } }
-const jobBase: Job = { id: '33333333-3333-4333-8333-333333333333', customerUserId: baseAccount.id, categoryId: jobCategory.id, title: 'Clean my flat', description: 'Two rooms and a kitchen.', city: 'Ravensburg', postalCode: '88212', countryCode: 'DE', budgetType: 'RANGE', budgetMin: 50, budgetMax: 100, currency: 'EUR', preferredDate: null, preferredTimeText: null, status: 'DRAFT', createdAt: '2026-01-01', updatedAt: '2026-01-01', category: jobCategory }
+const jobBase: Job = { id: '33333333-3333-4333-8333-333333333333', customerUserId: baseAccount.id, assignedProviderUserId: null, categoryId: jobCategory.id, title: 'Clean my flat', description: 'Two rooms and a kitchen.', city: 'Ravensburg', postalCode: '88212', countryCode: 'DE', budgetType: 'RANGE', budgetMin: 50, budgetMax: 100, currency: 'EUR', preferredDate: null, preferredTimeText: null, status: 'DRAFT', createdAt: '2026-01-01', updatedAt: '2026-01-01', assignedAt: null, startedAt: null, finishedAt: null, completedAt: null, cancelledAt: null, category: jobCategory }
 
 class FakeProviders {
   profile: ProviderProfile | null = null
@@ -61,10 +61,14 @@ class FakeJobs {
   async transitionJob(id: string, customerUserId: string, from: JobStatus, to: JobStatus) {
     const job = this.jobs.get(id)
     if (!job || job.customerUserId !== customerUserId || job.status !== from) throw new Error('Invalid job transition')
-    const updated = { ...job, status: to }
+    const updated = { ...job, status: to, cancelledAt: to === 'CANCELLED' ? '2026-01-03' : job.cancelledAt }
     this.jobs.set(id, updated)
     return updated
   }
+  async getAssignedJobs(providerUserId: string) { return [...this.jobs.values()].filter((job) => job.assignedProviderUserId === providerUserId) }
+  async startJob(id: string, providerUserId: string) { const job = this.jobs.get(id); if (!job || job.assignedProviderUserId !== providerUserId || job.status !== 'ASSIGNED') throw new Error('Invalid job transition'); const updated = { ...job, status: 'IN_PROGRESS' as const, startedAt: '2026-01-04' }; this.jobs.set(id, updated); return updated }
+  async finishJob(id: string, providerUserId: string) { const job = this.jobs.get(id); if (!job || job.assignedProviderUserId !== providerUserId || job.status !== 'IN_PROGRESS') throw new Error('Invalid job transition'); const updated = { ...job, status: 'AWAITING_CONFIRMATION' as const, finishedAt: '2026-01-05' }; this.jobs.set(id, updated); return updated }
+  async confirmJob(id: string, customerUserId: string) { const job = this.jobs.get(id); if (!job || job.customerUserId !== customerUserId || job.status !== 'AWAITING_CONFIRMATION') throw new Error('Invalid job transition'); const updated = { ...job, status: 'COMPLETED' as const, completedAt: '2026-01-06' }; this.jobs.set(id, updated); return updated }
 }
 
 class FakeAccounts implements AccountStore {
@@ -218,5 +222,24 @@ test('customer jobs enforce roles, ownership, validation, translations, and life
     assert.equal((await request(baseUrl, `/api/v1/jobs/${id}`, { method: 'PATCH', headers: customerHeaders, body: JSON.stringify({ title: 'Updated open request' }) })).status, 200)
     assert.equal((await request(baseUrl, `/api/v1/jobs/${id}/cancel`, { method: 'POST', headers: customerHeaders })).status, 200)
     assert.equal((await request(baseUrl, `/api/v1/jobs/${id}`, { method: 'PATCH', headers: customerHeaders, body: JSON.stringify({ title: 'Cannot edit' }) })).status, 400)
+
+    const assigned = jobs.jobs.get(id)
+    assert.ok(assigned)
+    jobs.jobs.set(id, { ...assigned, status: 'ASSIGNED', assignedProviderUserId: '99999999-9999-4999-8999-999999999999', assignedAt: '2026-01-03' })
+    assert.equal((await request(baseUrl, '/api/v1/provider/jobs/assigned', { headers: providerHeaders })).status, 200)
+    assert.equal((await request(baseUrl, `/api/v1/provider/jobs/${id}/start`, { method: 'POST', headers: providerHeaders })).status, 403)
+    jobs.jobs.set(id, { ...jobs.jobs.get(id)!, assignedProviderUserId: providerAccount.id })
+    assert.equal((await request(baseUrl, `/api/v1/provider/jobs/${id}/start`, { method: 'POST', headers: providerHeaders })).status, 200)
+    const started = jobs.jobs.get(id)
+    assert.equal(started?.startedAt, '2026-01-04')
+    assert.equal((await request(baseUrl, `/api/v1/provider/jobs/${id}/complete`, { method: 'POST', headers: providerHeaders })).status, 404)
+    assert.equal((await request(baseUrl, `/api/v1/jobs/${id}/confirm`, { method: 'POST', headers: customerHeaders })).status, 409)
+    assert.equal((await request(baseUrl, `/api/v1/provider/jobs/${id}/finish`, { method: 'POST', headers: providerHeaders })).status, 200)
+    assert.equal(jobs.jobs.get(id)?.finishedAt, '2026-01-05')
+    assert.equal((await request(baseUrl, `/api/v1/jobs/${id}/confirm`, { method: 'POST', headers: { ...customerHeaders, authorization: 'Bearer other' } })).status, 403)
+    assert.equal((await request(baseUrl, `/api/v1/jobs/${id}/confirm`, { method: 'POST', headers: customerHeaders })).status, 200)
+    assert.equal(jobs.jobs.get(id)?.completedAt, '2026-01-06')
+    assert.equal((await request(baseUrl, `/api/v1/provider/jobs/${id}/finish`, { method: 'POST', headers: providerHeaders })).status, 409)
+    assert.equal((await request(baseUrl, `/api/v1/jobs/${id}/cancel`, { method: 'POST', headers: customerHeaders })).status, 409)
   }, undefined, jobs)
 })

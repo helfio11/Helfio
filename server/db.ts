@@ -109,7 +109,12 @@ export interface ProviderProfile extends ProviderProfileInput {
   createdAt: string
   updatedAt: string
   services: ProviderService[]
+  rating?: RatingSummary
 }
+
+export interface RatingSummary { averageRating: number | null; reviewCount: number }
+export interface Review { id: string; jobId: string; providerUserId: string; rating: number; comment: string | null; reviewerDisplayName: string | null; createdAt: string; updatedAt: string }
+export interface ReviewInput { rating: number; comment: string | null }
 
 function mapProvider(row: Record<string, unknown>, services: ProviderService[]): ProviderProfile {
   return {
@@ -141,7 +146,7 @@ async function providerServices(userId: string): Promise<ProviderService[]> {
 
 export async function getProviderProfile(userId: string): Promise<ProviderProfile | null> {
   const result = await pool.query(`${providerSelect} WHERE user_id = $1`, [userId])
-  return result.rows[0] ? mapProvider(result.rows[0], await providerServices(userId)) : null
+  return result.rows[0] ? { ...mapProvider(result.rows[0], await providerServices(userId)), rating: await getProviderRating(userId) } : null
 }
 
 export async function saveProviderProfile(userId: string, input: ProviderProfileInput): Promise<ProviderProfile> {
@@ -184,17 +189,55 @@ export async function setProviderServices(userId: string, categoryIds: string[])
 
 export async function getPublicProviders(): Promise<ProviderProfile[]> {
   const result = await pool.query(`${providerSelect} WHERE visibility = 'PUBLIC' ORDER BY updated_at DESC LIMIT 24`)
-  return Promise.all(result.rows.map((row) => providerServices(String(row.userId)).then((services) => mapProvider(row, services))))
+  return Promise.all(result.rows.map(async (row) => {
+    const userId = String(row.userId)
+    return { ...mapProvider(row, await providerServices(userId)), rating: await getProviderRating(userId) }
+  }))
 }
 
 export async function getPublicProvider(userId: string): Promise<ProviderProfile | null> {
   const result = await pool.query(`${providerSelect} WHERE user_id = $1 AND visibility = 'PUBLIC'`, [userId])
-  return result.rows[0] ? mapProvider(result.rows[0], await providerServices(userId)) : null
+  return result.rows[0] ? { ...mapProvider(result.rows[0], await providerServices(userId)), rating: await getProviderRating(userId) } : null
+}
+
+export async function getProviderRating(providerUserId: string): Promise<RatingSummary> {
+  const result = await pool.query<{ averageRating: number | null; reviewCount: number }>(`SELECT ROUND(AVG(rating)::numeric, 1)::float AS "averageRating", count(*)::int AS "reviewCount" FROM reviews WHERE provider_user_id = $1 AND moderation_status = 'VISIBLE'`, [providerUserId])
+  return { averageRating: result.rows[0].averageRating, reviewCount: Number(result.rows[0].reviewCount) }
+}
+
+function mapReview(row: Record<string, unknown>): Review {
+  return { id: String(row.id), jobId: String(row.jobId), providerUserId: String(row.providerUserId), rating: Number(row.rating), comment: row.comment === null ? null : String(row.comment), reviewerDisplayName: row.reviewerDisplayName ? String(row.reviewerDisplayName) : null, createdAt: String(row.createdAt), updatedAt: String(row.updatedAt) }
+}
+
+export async function createReview(customerUserId: string, jobId: string, input: ReviewInput): Promise<Review> {
+  let inserted
+  try {
+    inserted = await pool.query(`INSERT INTO reviews (job_id, customer_user_id, provider_user_id, rating, comment)
+      SELECT j.id, j.customer_user_id, j.assigned_provider_user_id, $3, $4 FROM jobs j
+      WHERE j.id = $1 AND j.customer_user_id = $2 AND j.status = 'COMPLETED'
+        AND j.assigned_provider_user_id IS NOT NULL AND j.assigned_provider_user_id <> j.customer_user_id
+      RETURNING id`, [jobId, customerUserId, input.rating, input.comment])
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === '23505') throw new Error('Duplicate review')
+    throw error
+  }
+  if (!inserted.rows[0]) throw new Error('Review not allowed')
+  const result = await pool.query(`SELECT r.id, r.job_id AS "jobId", r.provider_user_id AS "providerUserId", r.rating, r.comment,
+    u.display_name AS "reviewerDisplayName", r.created_at AS "createdAt", r.updated_at AS "updatedAt"
+    FROM reviews r JOIN users u ON u.id = r.customer_user_id WHERE r.id = $1`, [inserted.rows[0].id])
+  return mapReview(result.rows[0])
+}
+
+export async function getProviderReviews(providerUserId: string): Promise<Review[]> {
+  const result = await pool.query(`SELECT r.id, r.job_id AS "jobId", r.provider_user_id AS "providerUserId", r.rating, r.comment,
+    u.display_name AS "reviewerDisplayName", r.created_at AS "createdAt", r.updated_at AS "updatedAt"
+    FROM reviews r JOIN users u ON u.id = r.customer_user_id WHERE r.provider_user_id = $1 AND r.moderation_status = 'VISIBLE' ORDER BY r.created_at DESC`, [providerUserId])
+  return result.rows.map(mapReview)
 }
 
 export type SearchKind = 'all' | 'providers' | 'jobs' | 'categories'
 export type SearchSort = 'relevance' | 'newest' | 'price'
-export interface SearchInput { kind: SearchKind; query: string; category: string | null; city: string | null; availability: AvailabilityStatus | null; minPrice: number | null; maxPrice: number | null; sort: SearchSort; page: number; pageSize: number }
+export interface SearchInput { kind: SearchKind; query: string; category: string | null; city: string | null; availability: AvailabilityStatus | null; minPrice: number | null; maxPrice: number | null; minRating?: number | null; sort: SearchSort; page: number; pageSize: number }
 export interface SearchPage<T> { items: T[]; page: number; pageSize: number; total: number; hasNext: boolean }
 export interface SearchResults { providers: SearchPage<PublicProviderProfile>; jobs: SearchPage<Job>; categories: SearchPage<CategoryRow> }
 
@@ -216,9 +259,13 @@ export async function searchMarketplace(input: SearchInput): Promise<SearchResul
     if (input.availability) { values.push(input.availability); filters.push(`p.availability_status = $${values.length}`) }
     if (input.minPrice !== null) { values.push(input.minPrice); filters.push(`p.starting_price >= $${values.length}`) }
     if (input.maxPrice !== null) { values.push(input.maxPrice); filters.push(`p.starting_price IS NULL OR p.starting_price <= $${values.length}`) }
+    if (input.minRating !== null && input.minRating !== undefined) { values.push(input.minRating); filters.push(`COALESCE((SELECT AVG(r.rating) FROM reviews r WHERE r.provider_user_id = p.user_id), 0) >= $${values.length}`) }
     const order = input.sort === 'price' ? 'p.starting_price NULLS LAST, p.updated_at DESC' : 'p.updated_at DESC'
     const result = await pool.query(`${providerSelect} p WHERE ${filters.join(' AND ')} ORDER BY ${order}`, values)
-    for (const row of result.rows) providers.push(publicProvider(mapProvider(row, await providerServices(String(row.userId))))!)
+    for (const row of result.rows) {
+      const userId = String(row.userId)
+      providers.push(publicProvider({ ...mapProvider(row, await providerServices(userId)), rating: await getProviderRating(userId) })!)
+    }
   }
   const jobs: Job[] = []
   if (input.kind === 'all' || input.kind === 'jobs') {
@@ -243,7 +290,7 @@ export async function searchMarketplace(input: SearchInput): Promise<SearchResul
   return { providers: pageOf(providers, input.page, input.pageSize), jobs: pageOf(jobs, input.page, input.pageSize), categories: pageOf(categories, input.page, input.pageSize) }
 }
 
-export type JobStatus = 'DRAFT' | 'OPEN' | 'ASSIGNED' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED'
+export type JobStatus = 'DRAFT' | 'OPEN' | 'ASSIGNED' | 'IN_PROGRESS' | 'AWAITING_CONFIRMATION' | 'COMPLETED' | 'CANCELLED'
 export type BudgetType = 'FIXED' | 'RANGE' | 'NEGOTIABLE'
 
 export interface JobInput {
@@ -264,9 +311,15 @@ export interface JobInput {
 export interface Job extends JobInput {
   id: string
   customerUserId: string
+  assignedProviderUserId: string | null
   status: JobStatus
   createdAt: string
   updatedAt: string
+  assignedAt: string | null
+  startedAt: string | null
+  finishedAt: string | null
+  completedAt: string | null
+  cancelledAt: string | null
   category: CategoryRow
 }
 
@@ -274,7 +327,8 @@ const jobSelect = `SELECT j.id, j.customer_user_id AS "customerUserId", j.catego
   j.title, j.description, j.city, j.postal_code AS "postalCode", j.country_code AS "countryCode",
   j.budget_type AS "budgetType", j.budget_min AS "budgetMin", j.budget_max AS "budgetMax", j.currency,
   j.preferred_date AS "preferredDate", j.preferred_time_text AS "preferredTimeText", j.status,
-  j.created_at AS "createdAt", j.updated_at AS "updatedAt",
+  j.assigned_provider_user_id AS "assignedProviderUserId", j.created_at AS "createdAt", j.updated_at AS "updatedAt",
+  j.assigned_at AS "assignedAt", j.started_at AS "startedAt", j.finished_at AS "finishedAt", j.completed_at AS "completedAt", j.cancelled_at AS "cancelledAt",
   c.id AS "category_id", c.parent_id AS "category_parent_id", c.slug AS "category_slug", c.status AS "category_status",
   c.icon AS "category_icon", c.sort_order AS "category_sort_order", c.show_in_navigation AS "category_show_in_navigation",
   c.show_on_homepage AS "category_show_on_homepage", c.created_at AS "category_created_at", c.updated_at AS "category_updated_at"
@@ -283,13 +337,16 @@ const jobSelect = `SELECT j.id, j.customer_user_id AS "customerUserId", j.catego
 async function mapJob(row: Record<string, unknown>): Promise<Job> {
   const translations = await pool.query(`SELECT locale, jsonb_build_object('name', name, 'description', description) AS translation FROM category_translations WHERE category_id = $1`, [row.categoryId])
   return {
-    id: String(row.id), customerUserId: String(row.customerUserId), categoryId: String(row.categoryId), title: String(row.title),
+    id: String(row.id), customerUserId: String(row.customerUserId), assignedProviderUserId: row.assignedProviderUserId ? String(row.assignedProviderUserId) : null, categoryId: String(row.categoryId), title: String(row.title),
     description: String(row.description), city: String(row.city), postalCode: row.postalCode ? String(row.postalCode) : null,
     countryCode: String(row.countryCode), budgetType: row.budgetType as BudgetType, budgetMin: row.budgetMin === null ? null : Number(row.budgetMin),
     budgetMax: row.budgetMax === null ? null : Number(row.budgetMax), currency: String(row.currency),
     preferredDate: row.preferredDate ? String(row.preferredDate).slice(0, 10) : null,
     preferredTimeText: row.preferredTimeText ? String(row.preferredTimeText) : null, status: row.status as JobStatus,
-    createdAt: String(row.createdAt), updatedAt: String(row.updatedAt), category: {
+    createdAt: String(row.createdAt), updatedAt: String(row.updatedAt), assignedAt: row.assignedAt ? String(row.assignedAt) : null,
+    startedAt: row.startedAt ? String(row.startedAt) : null, finishedAt: row.finishedAt ? String(row.finishedAt) : null,
+    completedAt: row.completedAt ? String(row.completedAt) : null,
+    cancelledAt: row.cancelledAt ? String(row.cancelledAt) : null, category: {
       id: String(row.category_id), parentId: row.category_parent_id ? String(row.category_parent_id) : null, slug: String(row.category_slug),
       status: row.category_status as 'active' | 'inactive', icon: row.category_icon ? String(row.category_icon) : null, sortOrder: Number(row.category_sort_order),
       showInNavigation: Boolean(row.category_show_in_navigation), showOnHomepage: Boolean(row.category_show_on_homepage), createdAt: String(row.category_created_at),
@@ -311,6 +368,11 @@ async function assertActiveCategory(categoryId: string) {
 
 export async function getJobs(customerUserId: string): Promise<Job[]> {
   const result = await pool.query(`${jobSelect} WHERE j.customer_user_id = $1 ORDER BY j.updated_at DESC`, [customerUserId])
+  return Promise.all(result.rows.map(mapJob))
+}
+
+export async function getAssignedJobs(providerUserId: string): Promise<Job[]> {
+  const result = await pool.query(`${jobSelect} WHERE j.assigned_provider_user_id = $1 ORDER BY j.updated_at DESC`, [providerUserId])
   return Promise.all(result.rows.map(mapJob))
 }
 
@@ -353,7 +415,37 @@ export async function updateJob(id: string, customerUserId: string, changes: Par
 }
 
 export async function transitionJob(id: string, customerUserId: string, from: JobStatus, to: JobStatus): Promise<Job> {
-  const result = await pool.query(`UPDATE jobs SET status = $1, updated_at = now() WHERE id = $2 AND customer_user_id = $3 AND status = $4 RETURNING id`, [to, id, customerUserId, from])
+  const allowed = (from === 'DRAFT' && to === 'OPEN') || (to === 'CANCELLED' && (from === 'DRAFT' || from === 'OPEN' || from === 'ASSIGNED'))
+  if (!allowed) throw new Error('Invalid job transition')
+  const result = await pool.query(`UPDATE jobs SET status = $1, cancelled_at = CASE WHEN $1 = 'CANCELLED' THEN now() ELSE cancelled_at END, updated_at = now()
+    WHERE id = $2 AND customer_user_id = $3 AND status = $4 AND status <> 'COMPLETED' RETURNING id`, [to, id, customerUserId, from])
+  if (!result.rows[0]) throw new Error('Invalid job transition')
+  const job = await findJob(id, customerUserId)
+  if (!job) throw new Error('Job not found')
+  return job
+}
+
+export async function startJob(id: string, providerUserId: string): Promise<Job> {
+  const result = await pool.query(`UPDATE jobs SET status = 'IN_PROGRESS', started_at = now(), updated_at = now()
+    WHERE id = $1 AND assigned_provider_user_id = $2 AND status = 'ASSIGNED' RETURNING id`, [id, providerUserId])
+  if (!result.rows[0]) throw new Error('Invalid job transition')
+  const job = await findJob(id)
+  if (!job) throw new Error('Job not found')
+  return job
+}
+
+export async function finishJob(id: string, providerUserId: string): Promise<Job> {
+  const result = await pool.query(`UPDATE jobs SET status = 'AWAITING_CONFIRMATION', finished_at = now(), updated_at = now()
+    WHERE id = $1 AND assigned_provider_user_id = $2 AND status = 'IN_PROGRESS' RETURNING id`, [id, providerUserId])
+  if (!result.rows[0]) throw new Error('Invalid job transition')
+  const job = await findJob(id)
+  if (!job) throw new Error('Job not found')
+  return job
+}
+
+export async function confirmJob(id: string, customerUserId: string): Promise<Job> {
+  const result = await pool.query(`UPDATE jobs SET status = 'COMPLETED', completed_at = now(), updated_at = now()
+    WHERE id = $1 AND customer_user_id = $2 AND status = 'AWAITING_CONFIRMATION' RETURNING id`, [id, customerUserId])
   if (!result.rows[0]) throw new Error('Invalid job transition')
   const job = await findJob(id, customerUserId)
   if (!job) throw new Error('Job not found')
@@ -375,6 +467,7 @@ export interface PublicProviderProfile {
   startingPrice: number | null
   currency: string
   services: ProviderService[]
+  rating?: RatingSummary
 }
 export interface Offer extends OfferInput { id: string; jobId: string; providerUserId: string; provider: PublicProviderProfile | null; status: OfferStatus; createdAt: string; updatedAt: string }
 
@@ -385,7 +478,7 @@ function publicProvider(profile: ProviderProfile | null): PublicProviderProfile 
     profileImageRef: profile.profileImageRef ?? null, city: profile.city, postalCode: profile.postalCode,
     serviceRadiusKm: profile.serviceRadiusKm, availabilityStatus: profile.availabilityStatus,
     yearsExperience: profile.yearsExperience, startingPrice: profile.startingPrice ?? null,
-    currency: profile.currency, services: profile.services,
+    currency: profile.currency, services: profile.services, rating: profile.rating,
   }
 }
 
@@ -456,7 +549,7 @@ export async function transitionOffer(id: string, customerUserId: string, next: 
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
-    const current = await client.query(`SELECT o.id, o.job_id FROM offers o JOIN jobs j ON j.id = o.job_id WHERE o.id = $1 AND j.customer_user_id = $2 FOR UPDATE`, [id, customerUserId])
+    const current = await client.query(`SELECT o.id, o.job_id, o.provider_user_id FROM offers o JOIN jobs j ON j.id = o.job_id WHERE o.id = $1 AND j.customer_user_id = $2 FOR UPDATE`, [id, customerUserId])
     if (!current.rows[0]) throw new Error('Offer ownership required')
     if (next === 'ACCEPTED') {
       const openJob = await client.query(`SELECT id FROM jobs WHERE id = $1 AND status = 'OPEN' FOR UPDATE`, [current.rows[0].job_id])
@@ -464,7 +557,8 @@ export async function transitionOffer(id: string, customerUserId: string, next: 
       const updated = await client.query(`UPDATE offers SET status = 'ACCEPTED', updated_at = now() WHERE id = $1 AND status = 'PENDING' RETURNING id`, [id])
       if (!updated.rows[0]) throw new Error('Invalid offer transition')
       await client.query(`UPDATE offers SET status = 'REJECTED', updated_at = now() WHERE job_id = $1 AND id <> $2 AND status = 'PENDING'`, [current.rows[0].job_id, id])
-      await client.query(`UPDATE jobs SET status = 'ASSIGNED', updated_at = now() WHERE id = $1 AND status = 'OPEN'`, [current.rows[0].job_id])
+      await client.query(`UPDATE jobs SET status = 'ASSIGNED', assigned_provider_user_id = $2, assigned_at = now(), updated_at = now()
+        WHERE id = $1 AND status = 'OPEN'`, [current.rows[0].job_id, current.rows[0].provider_user_id])
     } else {
       const updated = await client.query(`UPDATE offers SET status = 'REJECTED', updated_at = now() WHERE id = $1 AND status = 'PENDING' RETURNING id`, [id])
       if (!updated.rows[0]) throw new Error('Invalid offer transition')
