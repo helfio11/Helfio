@@ -13,7 +13,7 @@
     "build": "vue-tsc -b && vite build",
     "preview": "vite preview",
     "typecheck:backend": "tsc -p tsconfig.server.json --noEmit",
-    "test:backend": "tsx --test server/**/*.test.ts"
+    "test:backend": "MARKETPLACE_ROLLBACK_MODE=true tsx --test server/**/*.test.ts"
   },
   "dependencies": {
     "jose": "^6.2.12",

@@ -29,3 +29,5 @@ management:
       enabled: true
 helfio:
   event-topic: ${KAFKA_TOPIC:helfio.domain-events}
+  keycloak-audience: ${KEYCLOAK_AUDIENCE:helfio-web}
+  keycloak-client-id: ${KEYCLOAK_CLIENT_ID:helfio-web}

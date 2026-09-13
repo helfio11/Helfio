@@ -167,11 +167,12 @@ function securityHeaders(response: ServerResponse, requestId: string) {
 }
 
 function isMarketplacePath(pathname: string) {
-  return (pathname.startsWith('/api/v1/jobs') && !pathname.startsWith('/api/v1/jobs/public/')) || pathname.startsWith('/api/v1/provider/jobs') || pathname.startsWith('/api/v1/provider/offers') || pathname.startsWith('/api/v1/offers')
+  return pathname.startsWith('/api/v1/jobs') || pathname.startsWith('/api/v1/provider/jobs') || pathname.startsWith('/api/v1/provider/offers') || pathname.startsWith('/api/v1/offers') || /^\/api\/v1\/providers\/[^/]+\/(reviews|rating)$/.test(pathname)
 }
 
 async function proxyMarketplace(request: IncomingMessage, response: ServerResponse, url: URL, requestId: string) {
-  const base = process.env.MARKETPLACE_SERVICE_URL?.trim().replace(/\/$/, '')
+  if (process.env.MARKETPLACE_ROLLBACK_MODE?.trim().toLowerCase() === 'true') return false
+  const base = (process.env.MARKETPLACE_SERVICE_URL?.trim() || 'http://localhost:8090').replace(/\/$/, '')
   if (!base) return false
   try {
     const headers: Record<string, string> = { 'x-request-id': requestId }
