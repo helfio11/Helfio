@@ -1,6 +1,7 @@
 import pg from 'pg'
 import type { CategoryRow } from './categories.js'
 import type { AuthenticatedIdentity } from './auth.js'
+import { appendDomainEvent, type DomainEventType, type SqlClient } from './events.js'
 
 const { Pool } = pg
 export const pool = new Pool({ connectionString: process.env.DATABASE_URL })
@@ -23,6 +24,23 @@ export async function getCategories(filter = ''): Promise<CategoryRow[]> {
 
 export async function closeDatabase() {
   await pool.end()
+}
+
+async function withTransaction<T>(callback: (client: SqlClient) => Promise<T>): Promise<T> {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const result = await callback(client)
+    await client.query('COMMIT')
+    return result
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally { client.release() }
+}
+
+async function appendEvent(client: SqlClient, eventType: DomainEventType, aggregateId: string, payload: Record<string, unknown>) {
+  await appendDomainEvent(client, eventType, aggregateId, payload)
 }
 
 export type AccountStatus = 'ACTIVE' | 'SUSPENDED' | 'DISABLED'
@@ -210,21 +228,25 @@ function mapReview(row: Record<string, unknown>): Review {
 }
 
 export async function createReview(customerUserId: string, jobId: string, input: ReviewInput): Promise<Review> {
-  let inserted
+  let inserted: { id: string; providerUserId: string }
   try {
-    inserted = await pool.query(`INSERT INTO reviews (job_id, customer_user_id, provider_user_id, rating, comment)
-      SELECT j.id, j.customer_user_id, j.assigned_provider_user_id, $3, $4 FROM jobs j
-      WHERE j.id = $1 AND j.customer_user_id = $2 AND j.status = 'COMPLETED'
-        AND j.assigned_provider_user_id IS NOT NULL AND j.assigned_provider_user_id <> j.customer_user_id
-      RETURNING id`, [jobId, customerUserId, input.rating, input.comment])
+    inserted = await withTransaction(async (client) => {
+      const result = await client.query<{ id: string; providerUserId: string }>(`INSERT INTO reviews (job_id, customer_user_id, provider_user_id, rating, comment)
+        SELECT j.id, j.customer_user_id, j.assigned_provider_user_id, $3, $4 FROM jobs j
+        WHERE j.id = $1 AND j.customer_user_id = $2 AND j.status = 'COMPLETED'
+          AND j.assigned_provider_user_id IS NOT NULL AND j.assigned_provider_user_id <> j.customer_user_id
+        RETURNING id, provider_user_id AS "providerUserId"`, [jobId, customerUserId, input.rating, input.comment])
+      if (!result.rows[0]) throw new Error('Review not allowed')
+      await appendEvent(client, 'review.created', String(result.rows[0].id), { jobId, providerUserId: result.rows[0].providerUserId, recipientUserIds: [result.rows[0].providerUserId] })
+      return result.rows[0]
+    })
   } catch (error) {
     if (error && typeof error === 'object' && 'code' in error && error.code === '23505') throw new Error('Duplicate review')
     throw error
   }
-  if (!inserted.rows[0]) throw new Error('Review not allowed')
   const result = await pool.query(`SELECT r.id, r.job_id AS "jobId", r.provider_user_id AS "providerUserId", r.rating, r.comment,
     u.display_name AS "reviewerDisplayName", r.created_at AS "createdAt", r.updated_at AS "updatedAt"
-    FROM reviews r JOIN users u ON u.id = r.customer_user_id WHERE r.id = $1`, [inserted.rows[0].id])
+    FROM reviews r JOIN users u ON u.id = r.customer_user_id WHERE r.id = $1`, [inserted.id])
   return mapReview(result.rows[0])
 }
 
@@ -381,12 +403,17 @@ export async function getJob(id: string, customerUserId?: string): Promise<Job |
 }
 
 export async function createJob(customerUserId: string, input: JobInput): Promise<Job> {
-  await assertActiveCategory(input.categoryId)
-  const result = await pool.query<{ id: string }>(`INSERT INTO jobs
-    (customer_user_id, category_id, title, description, city, postal_code, country_code, budget_type, budget_min, budget_max, currency, preferred_date, preferred_time_text)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING id`,
-  [customerUserId, input.categoryId, input.title, input.description, input.city, input.postalCode, input.countryCode, input.budgetType, input.budgetMin, input.budgetMax, input.currency, input.preferredDate, input.preferredTimeText])
-  const job = await findJob(result.rows[0].id, customerUserId)
+  const jobId = await withTransaction(async (client) => {
+    const category = await client.query(`SELECT id FROM categories WHERE id = $1 AND status = 'active'`, [input.categoryId])
+    if (!category.rows[0]) throw new Error('Invalid active category')
+    const result = await client.query<{ id: string }>(`INSERT INTO jobs
+      (customer_user_id, category_id, title, description, city, postal_code, country_code, budget_type, budget_min, budget_max, currency, preferred_date, preferred_time_text)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING id`,
+    [customerUserId, input.categoryId, input.title, input.description, input.city, input.postalCode, input.countryCode, input.budgetType, input.budgetMin, input.budgetMax, input.currency, input.preferredDate, input.preferredTimeText])
+    await appendEvent(client, 'job.created', String(result.rows[0].id), { customerUserId, title: input.title, recipientUserIds: [customerUserId] })
+    return result.rows[0].id
+  })
+  const job = await findJob(jobId, customerUserId)
   if (!job) throw new Error('Job not found after creation')
   return job
 }
@@ -417,36 +444,48 @@ export async function updateJob(id: string, customerUserId: string, changes: Par
 export async function transitionJob(id: string, customerUserId: string, from: JobStatus, to: JobStatus): Promise<Job> {
   const allowed = (from === 'DRAFT' && to === 'OPEN') || (to === 'CANCELLED' && (from === 'DRAFT' || from === 'OPEN' || from === 'ASSIGNED'))
   if (!allowed) throw new Error('Invalid job transition')
-  const result = await pool.query(`UPDATE jobs SET status = $1, cancelled_at = CASE WHEN $1 = 'CANCELLED' THEN now() ELSE cancelled_at END, updated_at = now()
-    WHERE id = $2 AND customer_user_id = $3 AND status = $4 AND status <> 'COMPLETED' RETURNING id`, [to, id, customerUserId, from])
-  if (!result.rows[0]) throw new Error('Invalid job transition')
+  await withTransaction(async (client) => {
+    const result = await client.query(`UPDATE jobs SET status = $1, cancelled_at = CASE WHEN $1 = 'CANCELLED' THEN now() ELSE cancelled_at END, updated_at = now()
+      WHERE id = $2 AND customer_user_id = $3 AND status = $4 AND status <> 'COMPLETED' RETURNING id`, [to, id, customerUserId, from])
+    if (!result.rows[0]) throw new Error('Invalid job transition')
+    if (to === 'OPEN') await appendEvent(client, 'job.published', id, { customerUserId, title: 'job', recipientUserIds: [customerUserId] })
+  })
   const job = await findJob(id, customerUserId)
   if (!job) throw new Error('Job not found')
   return job
 }
 
 export async function startJob(id: string, providerUserId: string): Promise<Job> {
-  const result = await pool.query(`UPDATE jobs SET status = 'IN_PROGRESS', started_at = now(), updated_at = now()
-    WHERE id = $1 AND assigned_provider_user_id = $2 AND status = 'ASSIGNED' RETURNING id`, [id, providerUserId])
-  if (!result.rows[0]) throw new Error('Invalid job transition')
+  await withTransaction(async (client) => {
+    const result = await client.query(`UPDATE jobs SET status = 'IN_PROGRESS', started_at = now(), updated_at = now()
+      WHERE id = $1 AND assigned_provider_user_id = $2 AND status = 'ASSIGNED' RETURNING id, customer_user_id AS "customerUserId"`, [id, providerUserId])
+    if (!result.rows[0]) throw new Error('Invalid job transition')
+    await appendEvent(client, 'job.started', id, { customerUserId: result.rows[0].customerUserId, providerUserId, recipientUserIds: [String(result.rows[0].customerUserId)] })
+  })
   const job = await findJob(id)
   if (!job) throw new Error('Job not found')
   return job
 }
 
 export async function finishJob(id: string, providerUserId: string): Promise<Job> {
-  const result = await pool.query(`UPDATE jobs SET status = 'AWAITING_CONFIRMATION', finished_at = now(), updated_at = now()
-    WHERE id = $1 AND assigned_provider_user_id = $2 AND status = 'IN_PROGRESS' RETURNING id`, [id, providerUserId])
-  if (!result.rows[0]) throw new Error('Invalid job transition')
+  await withTransaction(async (client) => {
+    const result = await client.query(`UPDATE jobs SET status = 'AWAITING_CONFIRMATION', finished_at = now(), updated_at = now()
+      WHERE id = $1 AND assigned_provider_user_id = $2 AND status = 'IN_PROGRESS' RETURNING id, customer_user_id AS "customerUserId"`, [id, providerUserId])
+    if (!result.rows[0]) throw new Error('Invalid job transition')
+    await appendEvent(client, 'job.awaiting_confirmation', id, { customerUserId: result.rows[0].customerUserId, providerUserId, recipientUserIds: [String(result.rows[0].customerUserId)] })
+  })
   const job = await findJob(id)
   if (!job) throw new Error('Job not found')
   return job
 }
 
 export async function confirmJob(id: string, customerUserId: string): Promise<Job> {
-  const result = await pool.query(`UPDATE jobs SET status = 'COMPLETED', completed_at = now(), updated_at = now()
-    WHERE id = $1 AND customer_user_id = $2 AND status = 'AWAITING_CONFIRMATION' RETURNING id`, [id, customerUserId])
-  if (!result.rows[0]) throw new Error('Invalid job transition')
+  await withTransaction(async (client) => {
+    const result = await client.query(`UPDATE jobs SET status = 'COMPLETED', completed_at = now(), updated_at = now()
+      WHERE id = $1 AND customer_user_id = $2 AND status = 'AWAITING_CONFIRMATION' RETURNING id, assigned_provider_user_id AS "providerUserId"`, [id, customerUserId])
+    if (!result.rows[0]) throw new Error('Invalid job transition')
+    await appendEvent(client, 'job.completed', id, { customerUserId, providerUserId: result.rows[0].providerUserId, recipientUserIds: [String(result.rows[0].providerUserId)] })
+  })
   const job = await findJob(id, customerUserId)
   if (!job) throw new Error('Job not found')
   return job
@@ -514,18 +553,22 @@ export async function getOffersForProvider(providerUserId: string): Promise<Offe
 }
 
 export async function createOffer(jobId: string, providerUserId: string, input: OfferInput): Promise<Offer> {
-  let inserted
+  let inserted: { id: string; customerUserId: string }
   try {
-    inserted = await pool.query(`INSERT INTO offers (job_id, provider_user_id, price, currency, message, estimated_duration, available_from)
-      SELECT $1, $2, $3, $4, $5, $6, $7 FROM jobs j JOIN provider_profiles p ON p.user_id = $2
-      WHERE j.id = $1 AND j.status = 'OPEN' AND j.customer_user_id <> $2
-      RETURNING id`, [jobId, providerUserId, input.price, input.currency, input.message, input.estimatedDuration ?? null, input.availableFrom ?? null])
+    inserted = await withTransaction(async (client) => {
+      const result = await client.query<{ id: string; customerUserId: string }>(`INSERT INTO offers (job_id, provider_user_id, price, currency, message, estimated_duration, available_from)
+        SELECT $1, $2, $3, $4, $5, $6, $7 FROM jobs j JOIN provider_profiles p ON p.user_id = $2
+        WHERE j.id = $1 AND j.status = 'OPEN' AND j.customer_user_id <> $2
+        RETURNING id, (SELECT customer_user_id FROM jobs WHERE id = $1) AS "customerUserId"`, [jobId, providerUserId, input.price, input.currency, input.message, input.estimatedDuration ?? null, input.availableFrom ?? null])
+      if (!result.rows[0]) throw new Error('Offer cannot be submitted')
+      await appendEvent(client, 'offer.created', String(result.rows[0].id), { jobId, providerUserId, customerUserId: result.rows[0].customerUserId, recipientUserIds: [String(result.rows[0].customerUserId)] })
+      return result.rows[0]
+    })
   } catch (error) {
     if (error && typeof error === 'object' && 'code' in error && error.code === '23505') throw new Error('Duplicate active offer')
     throw error
   }
-  if (!inserted.rows[0]) throw new Error('Offer cannot be submitted')
-  const offer = await pool.query(`${offerSelect} WHERE o.id = $1`, [inserted.rows[0].id])
+  const offer = await pool.query(`${offerSelect} WHERE o.id = $1`, [inserted.id])
   return (await hydrateOffers(offer.rows))[0]
 }
 
@@ -559,6 +602,8 @@ export async function transitionOffer(id: string, customerUserId: string, next: 
       await client.query(`UPDATE offers SET status = 'REJECTED', updated_at = now() WHERE job_id = $1 AND id <> $2 AND status = 'PENDING'`, [current.rows[0].job_id, id])
       await client.query(`UPDATE jobs SET status = 'ASSIGNED', assigned_provider_user_id = $2, assigned_at = now(), updated_at = now()
         WHERE id = $1 AND status = 'OPEN'`, [current.rows[0].job_id, current.rows[0].provider_user_id])
+      await appendEvent(client, 'offer.accepted', String(current.rows[0].id), { jobId: current.rows[0].job_id, providerUserId: current.rows[0].provider_user_id, customerUserId, recipientUserIds: [String(current.rows[0].provider_user_id)] })
+      await appendEvent(client, 'job.assigned', String(current.rows[0].job_id), { jobId: current.rows[0].job_id, providerUserId: current.rows[0].provider_user_id, customerUserId, recipientUserIds: [String(current.rows[0].provider_user_id)] })
     } else {
       const updated = await client.query(`UPDATE offers SET status = 'REJECTED', updated_at = now() WHERE id = $1 AND status = 'PENDING' RETURNING id`, [id])
       if (!updated.rows[0]) throw new Error('Invalid offer transition')
@@ -636,11 +681,13 @@ export async function sendMessage(conversationId: string, userId: string, conten
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
-    const participant = await client.query(`SELECT id FROM conversations WHERE id = $1 AND (customer_user_id = $2 OR provider_user_id = $2) FOR UPDATE`, [conversationId, userId])
+    const participant = await client.query(`SELECT id, customer_user_id AS "customerUserId", provider_user_id AS "providerUserId" FROM conversations WHERE id = $1 AND (customer_user_id = $2 OR provider_user_id = $2) FOR UPDATE`, [conversationId, userId])
     if (!participant.rows[0]) throw new Error('Conversation access denied')
     const inserted = await client.query(`INSERT INTO messages (conversation_id, sender_user_id, content) VALUES ($1, $2, $3)
       RETURNING id, conversation_id AS "conversationId", sender_user_id AS "senderUserId", content, read_at AS "readAt", created_at AS "createdAt"`, [conversationId, userId, content])
     await client.query(`UPDATE conversations SET updated_at = now() WHERE id = $1`, [conversationId])
+    const recipientUserId = String(participant.rows[0].customerUserId) === userId ? String(participant.rows[0].providerUserId) : String(participant.rows[0].customerUserId)
+    await appendEvent(client, 'message.created', String(inserted.rows[0].id), { conversationId, messagePreview: content.slice(0, 240), recipientUserIds: [recipientUserId] })
     await client.query('COMMIT')
     return mapMessage(inserted.rows[0])
   } catch (error) { await client.query('ROLLBACK'); throw error } finally { client.release() }

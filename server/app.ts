@@ -3,7 +3,8 @@ import { authenticate, hasRole, type AuthenticatedIdentity, type TokenVerifier }
 import { createOpenAiProvider, type AiModelResponse, type AiToolCall, type AiToolDefinition } from './ai.js'
 import { buildCategoryTree, type CategoryNode } from './categories.js'
 import { appendAiConversation, confirmJob, createConversation, createJob, createOffer, createReview, findOrCreateUser, finishJob, getAiConversation, getAssignedJobs, getConversation, getConversations, getJob, getJobs, getOffersForJob, getOffersForProvider, getOpenJobsForProvider, getPublicProvider, getPublicProviders, getProviderProfile, getProviderRating, getProviderReviews, getPushSubscriptions, getUnreadMessageCount, markConversationRead, savePushSubscription, searchMarketplace, saveProviderProfile, setProviderServices, sendMessage, startJob, transitionJob, transitionOffer, updateJob, updateOffer, updateUserAccount, withdrawOffer, type AvailabilityStatus, type Conversation, type ConversationInput, type Job, type JobInput, type JobStatus, type Message, type Offer, type OfferInput, type PreferredLocale, type ProviderProfile, type ProviderProfileInput, type PushSubscription, type RatingSummary, type Review, type ReviewInput, type SearchInput, type SearchKind, type SearchResults, type SearchSort, type UserAccount } from './db.js'
-import { notifyPush, vapidPublicKey, type PushSubscriptionInput } from './push.js'
+import { vapidPublicKey, type PushSubscriptionInput } from './push.js'
+import { getUnreadNotificationCount, listNotifications, markAllNotificationsRead, markNotificationRead, type NotificationView } from './notifications.js'
 import { type ApplicationRole } from './roles.js'
 import { adminDashboard, auditLog, createCategory, deleteCategory, getSettings, listCategories, listJobs, listProviders, listReviews, listUsers, moderateReview, recordAudit, updateCategory, updateProviderStatus, updateSettings, updateUserStatus, type AdminJob, type AdminMetrics, type AdminPage, type AdminProvider, type AdminReview, type AdminUser, type AuditEntry, type CategoryInput } from './admin.js'
 
@@ -53,6 +54,13 @@ export interface MessagingStore {
   getPushSubscriptions(userId: string): Promise<PushSubscription[]>
 }
 
+export interface NotificationStore {
+  list(userId: string, locale: UserAccount['preferredLocale'], limit?: number): Promise<NotificationView[]>
+  unreadCount(userId: string): Promise<number>
+  markRead(id: string, userId: string): Promise<boolean>
+  markAllRead(userId: string): Promise<number>
+}
+
 export interface ReviewStore {
   createReview(customerUserId: string, jobId: string, input: ReviewInput): Promise<Review>
   getProviderReviews(providerUserId: string): Promise<Review[]>
@@ -66,6 +74,7 @@ export interface ApiDependencies {
   jobs?: JobStore
   offers?: OfferStore
   messaging?: MessagingStore
+  notifications?: NotificationStore
   reviews?: ReviewStore
   pushNotify?: (subscription: PushSubscriptionInput, payload: { title: string; body: string; conversationId: string }) => Promise<boolean>
   getCategories?: (filter?: string) => Promise<Awaited<ReturnType<typeof import('./db.js').getCategories>>>
@@ -103,6 +112,7 @@ const defaultProviders: ProviderStore = { getProviderProfile, saveProviderProfil
 const defaultJobs: JobStore = { getJobs, getAssignedJobs, getJob, createJob, updateJob, transitionJob, startJob, finishJob, confirmJob }
 const defaultOffers: OfferStore = { getOpenJobs: getOpenJobsForProvider, getJobOffers: getOffersForJob, getProviderOffers: getOffersForProvider, createOffer, updateOffer, withdrawOffer, transitionOffer }
 const defaultMessaging: MessagingStore = { getConversations, getConversation, createConversation, sendMessage, markConversationRead, getUnreadMessageCount, savePushSubscription, getPushSubscriptions }
+const defaultNotifications: NotificationStore = { list: listNotifications, unreadCount: getUnreadNotificationCount, markRead: markNotificationRead, markAllRead: markAllNotificationsRead }
 const defaultReviews: ReviewStore = { createReview, getProviderReviews, getProviderRating }
 const defaultAdmin: AdminStore = { dashboard: adminDashboard, users: listUsers, providers: listProviders, jobs: listJobs, reviews: listReviews, categories: listCategories, createCategory, updateCategory, deleteCategory, updateUserStatus, updateProviderStatus, moderateReview, auditLog, recordAudit, settings: getSettings, updateSettings }
 const locales = new Set<PreferredLocale>(['en', 'de', 'sq', 'tr'])
@@ -624,6 +634,28 @@ export function createApiHandler(dependencies: ApiDependencies) {
         if (!authenticated) return
         sendJson(response, 200, { data: { count: await messaging.getUnreadMessageCount(authenticated.account.id) } }); return
       }
+      const notifications = dependencies.notifications ?? defaultNotifications
+      if (request.method === 'GET' && url.pathname === '/api/v1/notifications') {
+        const authenticated = await requireAccount(request, response, dependencies)
+        if (!authenticated) return
+        const limit = Math.max(1, Math.min(100, Number(url.searchParams.get('limit') ?? '50')))
+        const items = await notifications.list(authenticated.account.id, authenticated.account.preferredLocale, Number.isInteger(limit) ? limit : 50)
+        sendJson(response, 200, { data: { items, unreadCount: await notifications.unreadCount(authenticated.account.id) } }); return
+      }
+      const notificationMatch = url.pathname.match(/^\/api\/v1\/notifications\/([^/]+)\/read$/)
+      if (request.method === 'PATCH' && notificationMatch) {
+        const authenticated = await requireAccount(request, response, dependencies)
+        if (!authenticated) return
+        if (!/^[0-9a-f-]{36}$/.test(notificationMatch[1])) { sendJson(response, 400, { error: 'Invalid notification id' }); return }
+        const marked = await notifications.markRead(notificationMatch[1], authenticated.account.id)
+        sendJson(response, marked ? 200 : 404, marked ? { data: { read: true, unreadCount: await notifications.unreadCount(authenticated.account.id) } } : { error: 'Notification not found' }); return
+      }
+      if (request.method === 'PATCH' && url.pathname === '/api/v1/notifications/read-all') {
+        const authenticated = await requireAccount(request, response, dependencies)
+        if (!authenticated) return
+        const marked = await notifications.markAllRead(authenticated.account.id)
+        sendJson(response, 200, { data: { marked, unreadCount: 0 } }); return
+      }
       if (request.method === 'POST' && url.pathname === '/api/v1/inbox/conversations') {
         const authenticated = await requireCustomer(request, response, dependencies)
         if (!authenticated) return
@@ -652,7 +684,6 @@ export function createApiHandler(dependencies: ApiDependencies) {
           if (conversation) {
             const recipientId = conversation.customerUserId === authenticated.account.id ? conversation.providerUserId : conversation.customerUserId
             for (const listener of subscribers.get(recipientId) ?? []) listener.write(`event: message\ndata: ${JSON.stringify(message)}\n\n`)
-            for (const subscription of await messaging.getPushSubscriptions(recipientId)) await (dependencies.pushNotify ?? notifyPush)(subscription, { title: 'New Helfio message', body: message.content, conversationId: message.conversationId })
           }
           sendJson(response, 201, { data: message })
         } catch (error) { sendJson(response, 403, { error: error instanceof Error ? error.message : 'Message cannot be sent' }) }

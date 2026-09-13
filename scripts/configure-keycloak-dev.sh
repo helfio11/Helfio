@@ -27,9 +27,11 @@ CLIENT=$(curl -fsS -H "Authorization: Bearer $TOKEN" \
 CLIENT_ID=$(printf '%s' "$CLIENT" | jq -r '.[0].id')
 printf '%s' "$CLIENT" | jq --arg frontend "$KEYCLOAK_FRONTEND_PUBLIC_URL" \
   '.[0] + {
-    redirectUris: ((.[0].redirectUris + [$frontend + "/*"]) | unique),
-    webOrigins: ((.[0].webOrigins + [$frontend]) | unique),
-    attributes: ((.[0].attributes // {}) + {"post.logout.redirect.uris": "+"})
+    rootUrl: $frontend,
+    baseUrl: $frontend,
+    redirectUris: [$frontend + "/*"],
+    webOrigins: [$frontend],
+    attributes: ((.[0].attributes // {}) + {"post.logout.redirect.uris": ($frontend + "/*")})
   }' > /tmp/helfio-keycloak-web-client.json
 
 curl -fsS -o /dev/null -X PUT \
@@ -37,4 +39,20 @@ curl -fsS -o /dev/null -X PUT \
   -H 'Content-Type: application/json' \
   --data-binary @/tmp/helfio-keycloak-web-client.json \
   "$KEYCLOAK_ADMIN_URL/admin/realms/$KEYCLOAK_REALM/clients/$CLIENT_ID"
+
+PROFILE=$(curl -fsS -H "Authorization: Bearer $TOKEN" \
+  "$KEYCLOAK_ADMIN_URL/admin/realms/$KEYCLOAK_REALM/users/profile")
+printf '%s' "$PROFILE" | jq '
+  .attributes |= map(
+    if .name == "email"
+    then .validations = { "email": {}, "length": { "max": 255 } }
+    else .
+    end
+  )
+' > /tmp/helfio-keycloak-user-profile.json
+curl -fsS -o /dev/null -X PUT \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data-binary @/tmp/helfio-keycloak-user-profile.json \
+  "$KEYCLOAK_ADMIN_URL/admin/realms/$KEYCLOAK_REALM/users/profile"
 printf 'Configured %s for %s\n' "$KEYCLOAK_WEB_CLIENT_ID" "$KEYCLOAK_FRONTEND_PUBLIC_URL"
