@@ -1,4 +1,4 @@
-.menu-toggle{display:none}
+.menu-toggle{display:none}.mobile-auth-action{display:none}
 .topbar nav{order:2}
 .header-actions{order:3}
 .language-menu{display:contents}
@@ -17,6 +17,7 @@
   .topbar nav{display:none;order:4;width:100%;padding:12px 0 2px;gap:0;flex-direction:column;align-items:stretch;overflow:visible}
   .topbar nav.open{display:flex}
   .topbar nav a{padding:10px 2px;border-top:1px solid var(--line);font-size:12px}
+  .topbar nav .mobile-auth-action{display:block;width:100%;padding:10px 2px;border:0;border-top:1px solid var(--line);background:transparent;color:#526158;text-align:left;font-size:12px;font-weight:600}
   .header-actions{display:flex;align-items:center;gap:3px;margin-left:auto;order:2;position:relative;z-index:20}
   .header-actions>span:first-child,.language-chevron{display:none}
   .language-menu{display:block;position:relative}
