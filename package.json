@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:api": "tsx server/index.ts",
+    "dev:api": "node --env-file=.env --import tsx server/index.ts",
     "keycloak:configure-dev": "sh scripts/configure-keycloak-dev.sh",
     "vapid:generate": "node scripts/generate-vapid-keys.mjs",
     "db:migrate": "set -e; for migration in db/migrations/*.sql; do psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f \"$migration\"; done",
