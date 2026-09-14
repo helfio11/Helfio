@@ -31,13 +31,23 @@ const searchQuery = ref(''); const searchCity = ref('')
 const popularItems = ['cleaning', 'electrician', 'gardening', 'moving', 'painter', 'car'] as const
 const stepSymbols = ['⌕', '♧', '♡', '✓']
 const categoryAccents = ['mint', 'orange', 'green', 'blue', 'red', 'blue', 'pink', 'yellow', 'blue', 'purple', 'orange', 'slate']
+function updateCanonical() {
+  let canonical = document.querySelector('link[rel="canonical"]') as HTMLLinkElement | null
+  if (!canonical) {
+    canonical = document.createElement('link')
+    canonical.rel = 'canonical'
+    document.head.appendChild(canonical)
+  }
+  canonical.href = `${window.location.origin}${window.location.pathname}`
+}
 function changeLocale(next: Locale) { setLocale(next) }
 function localizedLine(key: string, index: number) { return t(key).split('\n')[index] }
 function categoryName(category: CategoryNode) { return category.translations[currentLocale.value]?.name || category.translations.en?.name || Object.values(category.translations).find((translation) => translation.name)?.name || category.slug }
-function goSearch(nextQuery = searchQuery.value, nextCity = searchCity.value) { const params = new URLSearchParams(); if (nextQuery.trim()) params.set('q', nextQuery.trim()); if (nextCity.trim()) params.set('city', nextCity.trim()); window.history.pushState({}, '', `/search${params.toString() ? `?${params}` : ''}`); routePath.value = '/search' }
-function routeChanged() { routePath.value = window.location.pathname }
+function goSearch(nextQuery = searchQuery.value, nextCity = searchCity.value) { const params = new URLSearchParams(); if (nextQuery.trim()) params.set('q', nextQuery.trim()); if (nextCity.trim()) params.set('city', nextCity.trim()); window.history.pushState({}, '', `/search${params.toString() ? `?${params}` : ''}`); routePath.value = '/search'; updateCanonical() }
+function routeChanged() { routePath.value = window.location.pathname; updateCanonical() }
 onMounted(async () => { const response = await fetch('/api/v1/categories/homepage'); if (!response.ok) return; const payload = await response.json() as { data: CategoryNode[] }; categories.value = payload.data })
 onMounted(async () => { const response = await fetch('/api/v1/providers/homepage'); if (response.ok) providers.value = (await response.json() as { data: PublicProvider[] }).data })
+onMounted(updateCanonical)
 onMounted(() => window.addEventListener('popstate', routeChanged))
 onUnmounted(() => window.removeEventListener('popstate', routeChanged))
 </script>

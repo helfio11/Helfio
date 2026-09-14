@@ -28,7 +28,9 @@ const page = <T>(items: T[]) => ({ items, page: 1, pageSize: 12, total: items.le
 async function withServer(callback: (baseUrl: string) => Promise<void>) {
   const server: Server = createServer(createApiHandler({ verifier: new Verifier(), accounts: accountStore as any, providers: providers as any, jobs: jobs as any, offers: offers as any, messaging: messaging as any, notifications: notifications as any, reviews: reviews as any, admin, getCategories: async () => [], search: async () => ({ providers: page([]), jobs: page([]), categories: page([]) }), aiProvider: { async complete() { throw new Error('forced AI outage') } } }))
   await new Promise<void>((resolve) => server.listen(0, resolve)); const address = server.address(); if (!address || typeof address === 'string') throw new Error('No address')
-  try { await callback(`http://127.0.0.1:${address.port}`) } finally { await new Promise<void>((resolve) => server.close(() => resolve())) }
+  const previousRollbackMode = process.env.MARKETPLACE_ROLLBACK_MODE
+  process.env.MARKETPLACE_ROLLBACK_MODE = 'true'
+  try { await callback(`http://127.0.0.1:${address.port}`) } finally { await new Promise<void>((resolve) => server.close(() => resolve())); if (previousRollbackMode === undefined) delete process.env.MARKETPLACE_ROLLBACK_MODE; else process.env.MARKETPLACE_ROLLBACK_MODE = previousRollbackMode }
 }
 function auth(token: string) { return { authorization: `Bearer ${token}`, 'content-type': 'application/json' } }
 

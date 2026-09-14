@@ -15,6 +15,7 @@ spring:
       resourceserver:
         jwt:
           issuer-uri: ${KEYCLOAK_ISSUER:http://localhost:8080/realms/helfio}
+          jwk-set-uri: ${KEYCLOAK_JWK_SET_URI:http://host.docker.internal:8080/realms/helfio/protocol/openid-connect/certs}
 management:
   endpoints:
     web:
